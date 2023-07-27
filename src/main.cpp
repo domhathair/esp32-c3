@@ -3,6 +3,7 @@
 #include "BleSerial.h"
 #include <Arduino.h>
 #include <ESPAsyncWebServer.h>
+#include <Preferences.h>
 #include <WiFi.h>
 
 #define RED_LED 0
@@ -11,16 +12,21 @@
 
 const unsigned creditianMaxLength = 32;
 const unsigned outputLogMaxLength = 128;
-const char *dummySsid = "hotspot";
-const char *dummyPassphrase = "password";
 char ssid[creditianMaxLength] = {0};
 char passphrase[creditianMaxLength] = {0};
 char outputLog[outputLogMaxLength] = {0};
 AsyncWebServer server(80);
 char *localIP = 0;
 String BLEName = "BLE-UART";
+Preferences Storage;
+const char *filename = "settings";
+const char *ssidKey = "ssid";
+const char *passphraseKey = "passphrase";
 
+static inline void printlog();
+static void initWifiCreditian(const char *, char *);
 static void changeWifiCreditian(char *);
+static void saveWifiCreditian(const char *key, char *creditian);
 static void connectToWiFi(char *, char *);
 
 struct Led {
@@ -59,17 +65,41 @@ class Ble : public BleParser, public BleHash {
     }
 
     void initBleHash() override {
-        commandList[hash("ssid")] = []() { changeWifiCreditian(ssid); };
-        commandList[hash("passphrase")] = []() {
+        commandList[hash(ssidKey)] = []() { changeWifiCreditian(ssid); };
+        commandList[hash(passphraseKey)] = []() {
             changeWifiCreditian(passphrase);
         };
         commandList[hash("connect")] = []() {
             connectToWiFi(ssid, passphrase);
         };
         commandList[hash("sleep")] = []() { log_e(">> It is sleep"); };
-        commandList[hash("save")] = []() { log_e(">> It is save"); };
+        commandList[hash("save")] = []() {
+            saveWifiCreditian(ssidKey, ssid);
+            saveWifiCreditian(passphraseKey, passphrase);
+        };
     }
 } Ble;
+
+static inline void printlog() {
+    if (Ble.connected())
+        Ble.printf("%s\r\n", outputLog);
+    log_e(">> %s", outputLog);
+}
+
+static void initWifiCreditian(const char *key, char *creditian) {
+    if (Storage.isKey(key)) {
+        Storage.getString(key, creditian, creditianMaxLength);
+        snprintf(outputLog, outputLogMaxLength,
+                 "Found creditian under key \"%s\": %s", key, creditian);
+    } else {
+        const char *basicCreditian = "hotspot";
+        strncpy(creditian, basicCreditian, creditianMaxLength);
+        Storage.putString(key, creditian);
+        snprintf(outputLog, outputLogMaxLength,
+                 "Created new creditian under key \"%s\": %s", key, creditian);
+    }
+    printlog();
+}
 
 static void changeWifiCreditian(char *creditian) {
     if (Ble.argc > Ble.it) {
@@ -80,7 +110,8 @@ static void changeWifiCreditian(char *creditian) {
                      "Wi-Fi creditian length must be less than %u.",
                      creditianMaxLength);
         } else {
-            strcpy(creditian, Ble.argv[Ble.it]);
+            memset(creditian, '\0', creditianMaxLength);
+            strncpy(creditian, Ble.argv[Ble.it], creditianMaxLength);
             creditian[length] = '\0';
             snprintf(outputLog, outputLogMaxLength,
                      "Wi-Fi creditian %s changed to \"%s\".",
@@ -90,9 +121,19 @@ static void changeWifiCreditian(char *creditian) {
         snprintf(outputLog, outputLogMaxLength,
                  "Fewer arguments than necessary in %s.", Ble.argv[Ble.it - 1]);
     }
-    if (Ble.connected())
-        Ble.printf("%s\r\n", outputLog);
-    log_e(">> %s", outputLog);
+    printlog();
+}
+
+static void saveWifiCreditian(const char *key, char *creditian) {
+    Storage.begin(filename);
+
+    if (Storage.isKey(key))
+        Storage.remove(key);
+    Storage.putString(key, creditian);
+
+    snprintf(outputLog, outputLogMaxLength,
+             "Creditian under key \"%s\" saved as: %s.", key, creditian);
+    printlog();
 }
 
 static void connectToWiFi(char *ssid, char *passphrase) {
@@ -118,9 +159,7 @@ static void connectToWiFi(char *ssid, char *passphrase) {
                  "Wi-Fi not connected after %u times.", timesMax);
         WiFi.disconnect(true);
     }
-    if (Ble.connected())
-        Ble.printf("%s\r\n", outputLog);
-    log_e(">> %s", outputLog);
+    printlog();
 }
 
 void setup() {
@@ -135,27 +174,25 @@ void setup() {
 
     ledcWrite(RED_LED, Led.duty);
 
+    Storage.begin(filename);
+
     if (!Ble.begin(BLEName.c_str(), true))
         log_e(">> BLE did not start!");
     else
         log_e(">> BLE started after name %s", BLEName);
     Ble.initBleHash();
 
-    unsigned length = strlen(dummySsid);
-    memcpy(ssid, dummySsid, length);
-    ssid[length] = '\0';
-
-    length = strlen(dummyPassphrase);
-    memcpy(passphrase, dummyPassphrase, length);
-    passphrase[length] = '\0';
+    initWifiCreditian(ssidKey, ssid);
+    initWifiCreditian(passphraseKey, passphrase);
 
     connectToWiFi(ssid, passphrase);
 
+    Storage.end();
+
     snprintf(outputLog, outputLogMaxLength,
              "Initialization completed in %u ms.", millis() - timeStamp);
-    if (Ble.connected())
-        Ble.printf("%s\r\n", outputLog);
-    log_e(">> %s", outputLog);
+
+    printlog();
 }
 
 void loop() {
@@ -168,22 +205,19 @@ void loop() {
     if (Ble.connected()) {
         if (!connectFlag) {
             snprintf(outputLog, outputLogMaxLength, "Bluetooth LE connected.");
-            Ble.printf("%s\r\n", outputLog);
-            log_e(">> %s", outputLog);
+            printlog();
             connectFlag = true;
         }
         if (Ble.isParsed() && !Ble.it) {
             for (; Ble.it < Ble.argc; Ble.it++) {
                 Ble.argv[Ble.it] = Ble.toLower(Ble.argv[Ble.it]);
-                unsigned stringHash = Ble.hash(Ble.argv[Ble.it]);
-                auto it = Ble.commandList.find(stringHash);
+                auto it = Ble.commandList.find(Ble.hash(Ble.argv[Ble.it]));
                 if (it != Ble.commandList.end())
                     it->second();
                 else {
                     snprintf(outputLog, outputLogMaxLength,
                              "Unknown command received.");
-                    Ble.printf("%s\r\n", outputLog);
-                    log_e(">> %s", outputLog);
+                    printlog();
                 }
             }
         }
