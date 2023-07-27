@@ -191,7 +191,6 @@ void setup() {
 
     snprintf(outputLog, outputLogMaxLength,
              "Initialization completed in %u ms.", millis() - timeStamp);
-
     printlog();
 }
 
