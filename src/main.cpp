@@ -40,24 +40,32 @@ struct Led {
 class Ble : public BleParser, public BleHash {
   public:
     void onWrite(BLECharacteristic *pCharacteristic) override {
-        static bool CR = false;
+        static struct {
+            bool CR : 1;
+            bool SL : 1;
+        } Flag = {.CR = false, .SL = false};
         if (pCharacteristic->getUUID().toString() == BLE_RX_UUID) {
             String value(pCharacteristic->getValue().data());
             for (unsigned counter = 0; counter < value.length(); counter++) {
-                receiveBuffer.add(value[counter]);
+                if (Flag.SL)
+                    receiveBuffer.add(value[counter]);
                 switch (value[counter]) {
+                case '/':
+                    Flag.SL = true;
+                    break;
                 case '\r':
-                    CR = true;
+                    Flag.CR = true;
                     break;
                 case '\n':
-                    if (CR) {
+                    if (Flag.CR) {
                         String string = readString();
-                        parseString(string, " ,.;:!?\n\r");
+                        parseString(string, " ,.;:!?/\n\r");
                         log_e(">> Received: %s", string.c_str());
+                        Flag.SL = false;
                     }
                     [[fallthrough]];
                 default:
-                    CR = false;
+                    Flag.CR = false;
                     break;
                 }
             }

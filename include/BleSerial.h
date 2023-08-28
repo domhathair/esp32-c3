@@ -11,7 +11,6 @@
     ESP_GATT_MAX_ATTR_LEN // must be greater than MTU, less than
                           // ESP_GATT_MAX_ATTR_LEN
 #define MIN_MTU 50
-#define RX_BUFFER_SIZE 4096
 
 class BleSerial : public BLECharacteristicCallbacks,
                   public BLEServerCallbacks,
@@ -49,7 +48,7 @@ class BleSerial : public BLECharacteristicCallbacks,
   protected:
     bool bleConnected;
 
-    ByteRingBuffer<RX_BUFFER_SIZE> receiveBuffer;
+    ByteRingBuffer<BLE_BUFFER_SIZE> receiveBuffer;
     uint8_t transmitBuffer[BLE_BUFFER_SIZE];
     size_t transmitBufferLength;
 
