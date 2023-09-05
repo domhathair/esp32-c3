@@ -1,16 +1,17 @@
 #ifndef BleSerial_h
 #define BleSerial_h
-#include <Arduino.h>
 #include "RingBuffer.h"
+#include <Arduino.h>
 #include <BLE2902.h>
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEUtils.h>
 
+#define BLE_BASIC_SIZE 256
 #define BLE_BUFFER_SIZE                                                        \
-    ESP_GATT_MAX_ATTR_LEN // must be greater than MTU, less than
-                          // ESP_GATT_MAX_ATTR_LEN
-#define MIN_MTU 50
+    (BLE_BASIC_SIZE > ESP_GATT_MAX_ATTR_LEN) ? ESP_GATT_MAX_ATTR_LEN           \
+                                             : BLE_BASIC_SIZE
+#define BLE_MTU 20
 
 class BleSerial : public BLECharacteristicCallbacks,
                   public BLEServerCallbacks,
@@ -20,24 +21,21 @@ class BleSerial : public BLECharacteristicCallbacks,
 
     bool begin(const char *name, bool enable_led = false, int led_pin = 13);
     bool connected();
-    int available();
-    int read();
-    int peek();
-    size_t readBytes(uint8_t *buffer, size_t bufferSize);
-    size_t write(uint8_t byte);
-    size_t write(const uint8_t *buffer, size_t bufferSize);
-    size_t print(const char *value);
+    int available() override;
+    int read() override;
+    int peek() override;
+    size_t readBytes(uint8_t *buffer, size_t bufferSize) override;
+    String readString() override;
+    size_t write(uint8_t byte) override;
+    size_t write(const uint8_t *buffer, size_t bufferSize) override;
     void end();
-    void flush();
-    void onWrite(BLECharacteristic *pCharacteristic);
-    void onConnect(BLEServer *pServer);
-    void onDisconnect(BLEServer *pServer);
+    void flush() override;
+    void onWrite(BLECharacteristic *pCharacteristic) override;
+    void onConnect(BLEServer *pServer) override;
+    void onDisconnect(BLEServer *pServer) override;
 
     BLEServer *Server;
-
     BLEAdvertising *Advertising;
-    // BLESecurity *Security;
-
     BLEService *Service;
     BLECharacteristic *TxCharacteristic;
     BLECharacteristic *RxCharacteristic;
@@ -60,6 +58,8 @@ class BleSerial : public BLECharacteristicCallbacks,
     const char *BLE_TX_UUID = "6e400003-b5a3-f393-e0a9-e50e24dcca9e";
 
   private:
+    void compatibilityTweak();
+
     BleSerial(BleSerial const &other) = delete;
     void operator=(BleSerial const &other) = delete;
 

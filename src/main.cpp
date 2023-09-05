@@ -13,7 +13,7 @@
 const unsigned creditianMaxLength = 32;
 const unsigned outputLogMaxLength = 128;
 char ssid[creditianMaxLength] = {0};
-char passphrase[creditianMaxLength] = {0};
+char pass[creditianMaxLength] = {0};
 char outputLog[outputLogMaxLength] = {0};
 AsyncWebServer server(80);
 char *localIP = 0;
@@ -21,13 +21,16 @@ String BLEName = "BLE-UART";
 Preferences Storage;
 const char *filename = "settings";
 const char *ssidKey = "ssid";
-const char *passphraseKey = "passphrase";
+const char *passKey = "pass";
 
 static inline void printlog();
 static void initWifiCreditian(const char *, char *);
 static void changeWifiCreditian(char *);
 static void saveWifiCreditian(const char *key, char *creditian);
 static void connectToWiFi(char *, char *);
+static void checkWifiCreditian();
+static void rebootMCU();
+static void temperatureMCU();
 
 struct Led {
     const uint8_t red;
@@ -42,28 +45,26 @@ class Ble : public BleParser, public BleHash {
     void onWrite(BLECharacteristic *pCharacteristic) override {
         static struct {
             bool CR : 1;
-            bool SL : 1;
-        } Flag = {.CR = false, .SL = false};
+            bool PR : 1;
+        } Flag = {.CR = false, .PR = false};
         if (pCharacteristic->getUUID().toString() == BLE_RX_UUID) {
             String value(pCharacteristic->getValue().data());
             for (unsigned counter = 0; counter < value.length(); counter++) {
-                if (Flag.SL)
+                if (Flag.PR)
                     receiveBuffer.add(value[counter]);
                 switch (value[counter]) {
-                case '/':
-                    Flag.SL = true;
+                case '#':
+                    Flag.PR = true;
                     break;
                 case '\r':
                     Flag.CR = true;
                     break;
                 case '\n':
                     if (Flag.CR) {
-                        String string; // = readString();
-                        for (int byte = '\0'; (byte = read()) > 0;)
-                            string += byte;
-                        parseString(string, " ,.;:!?/\n\r");
+                        String string = readString();
+                        parseString(string, " ,.;:!?/%\n\r");
                         log_e(">> Received: %s", string.c_str());
-                        Flag.SL = false;
+                        Flag.PR = false;
                     }
                     [[fallthrough]];
                 default:
@@ -75,18 +76,19 @@ class Ble : public BleParser, public BleHash {
     }
 
     void initBleHash() override {
-        commandList[hash(ssidKey)] = []() { changeWifiCreditian(ssid); };
-        commandList[hash(passphraseKey)] = []() {
-            changeWifiCreditian(passphrase);
-        };
-        commandList[hash("connect")] = []() {
-            connectToWiFi(ssid, passphrase);
-        };
-        commandList[hash("sleep")] = []() { log_e(">> It is sleep"); };
+        commandList[hash("ssid")] = []() { changeWifiCreditian(ssid); };
+        commandList[hash("pass")] = []() { changeWifiCreditian(pass); };
         commandList[hash("save")] = []() {
+            snprintf(outputLog, outputLogMaxLength,
+                     "Saved Wi-Fi creditians <\"key\": creditian>:");
+            printlog();
             saveWifiCreditian(ssidKey, ssid);
-            saveWifiCreditian(passphraseKey, passphrase);
+            saveWifiCreditian(passKey, pass);
         };
+        commandList[hash("connect")] = []() { connectToWiFi(ssid, pass); };
+        commandList[hash("check")] = []() { checkWifiCreditian(); };
+        commandList[hash("reboot")] = []() { rebootMCU(); };
+        commandList[hash("temperature")] = []() { temperatureMCU(); };
     }
 } Ble;
 
@@ -141,16 +143,15 @@ static void saveWifiCreditian(const char *key, char *creditian) {
         Storage.remove(key);
     Storage.putString(key, creditian);
 
-    snprintf(outputLog, outputLogMaxLength,
-             "Creditian under key \"%s\" saved as: %s.", key, creditian);
+    snprintf(outputLog, outputLogMaxLength, "\"%s\": %s.", key, creditian);
     printlog();
 }
 
-static void connectToWiFi(char *ssid, char *passphrase) {
+static void connectToWiFi(char *ssid, char *pass) {
     unsigned times = 0;
     const unsigned timesMax = 32;
 
-    WiFi.begin(ssid, passphrase);
+    WiFi.begin(ssid, pass);
     while (WiFi.status() != WL_CONNECTED && times++ < timesMax)
         delay(10);
 
@@ -169,6 +170,24 @@ static void connectToWiFi(char *ssid, char *passphrase) {
                  "Wi-Fi not connected after %u times.", timesMax);
         WiFi.disconnect(true);
     }
+    printlog();
+}
+
+static void checkWifiCreditian() {
+    snprintf(outputLog, outputLogMaxLength,
+             "Wi-Fi creditians <ssid, pass>: %s, %s.", ssid, pass);
+    printlog();
+}
+
+static void rebootMCU() {
+    snprintf(outputLog, outputLogMaxLength, "The device will now reboot!");
+    printlog();
+    delay(1000);
+    esp_restart();
+}
+
+static void temperatureMCU() {
+    snprintf(outputLog, outputLogMaxLength, "MCU temperature: %.1f C.", temperatureRead()); 
     printlog();
 }
 
@@ -193,9 +212,9 @@ void setup() {
     Ble.initBleHash();
 
     initWifiCreditian(ssidKey, ssid);
-    initWifiCreditian(passphraseKey, passphrase);
+    initWifiCreditian(passKey, pass);
 
-    connectToWiFi(ssid, passphrase);
+    connectToWiFi(ssid, pass);
 
     Storage.end();
 

@@ -2,7 +2,7 @@
 
 BleSerial::BleSerial() {}
 
-void compatibilityTweak() {
+void BleSerial::compatibilityTweak() {
     esp_ble_auth_req_t auth_req = ESP_LE_AUTH_REQ_SC_MITM_BOND;
     esp_ble_io_cap_t iocap = ESP_IO_CAP_NONE;
     uint8_t key_size = 16;
@@ -93,15 +93,16 @@ bool BleSerial::begin(const char *name, bool enable_led, int led_pin) {
               RxCharacteristic->getHandle());
     RxCharacteristic->setCallbacks(this);
 
-    // TxCharacteristic->setAccessPermissions(ESP_GATT_PERM_READ_ENCRYPTED);
-    // RxCharacteristic->setAccessPermissions(ESP_GATT_PERM_WRITE_ENCRYPTED);
-
-    // RxCharacteristic->addDescriptor(new BLE2902());
-
-    // TxCharacteristic->setReadProperty(true);
-    // RxCharacteristic->setWriteProperty(true);
-
     // compatibilityTweak();
+
+    if (maxTransferSize < BLE_MTU) {
+        uint16_t oldTransferSize = maxTransferSize;
+        peerMTU = Server->getPeerMTU(Server->getConnId()) - 5U;
+        maxTransferSize = peerMTU > BLE_BUFFER_SIZE ? BLE_BUFFER_SIZE : peerMTU;
+
+        if (maxTransferSize != oldTransferSize)
+            log_e(">> Max BLE transfer size set to %u", maxTransferSize);
+    }
 
     Service->start();
 
@@ -111,9 +112,6 @@ bool BleSerial::begin(const char *name, bool enable_led, int led_pin) {
         log_e(">> Bluetooth LE Advertising error.");
     }
     Advertising->addServiceUUID(BLEUUID(BLE_SS_UUID));
-    // Advertising->setScanResponse(true);
-    // Advertising->setMinPreferred(0x06);
-    // Advertising->setMinPreferred(0x12);
     Advertising->start();
 
     return true;
@@ -126,45 +124,42 @@ int BleSerial::available() { return this->receiveBuffer.getLength(); }
 int BleSerial::read() {
     if (available())
         return this->receiveBuffer.pop();
-    return -1;
+    return 0;
 }
 
 int BleSerial::peek() {
     if (!available())
-        return -1;
+        return 0;
     return this->receiveBuffer.get(0);
 }
 
 size_t BleSerial::readBytes(uint8_t *buffer, size_t bufferSize) {
     unsigned counter = 0;
-    while (counter < bufferSize)
-        buffer[counter++] = read();
+    for (uint8_t byte = '\0';
+         counter < bufferSize && (byte = (read() & 0xFF)) > 0;)
+        buffer[counter++] = byte;
     return counter;
+}
+
+String BleSerial::readString() {
+    String string;
+    for (char byte = '\0'; (byte = (read() & 0xFF)) > 0;)
+        string += byte;
+    return string;
 }
 
 size_t BleSerial::write(uint8_t byte) {
     if (Server->getConnectedCount() < 1)
         return 0;
     this->transmitBuffer[this->transmitBufferLength++] = byte;
-    if (this->transmitBufferLength == maxTransferSize)
+    if (this->transmitBufferLength == maxTransferSize ||
+        this->transmitBufferLength == BLE_MTU)
         flush();
     return 1;
 }
 
 size_t BleSerial::write(const uint8_t *buffer, size_t bufferSize) {
     if (Server->getConnectedCount() < 1)
-        return 0;
-
-    if (maxTransferSize < MIN_MTU) {
-        int oldTransferSize = maxTransferSize;
-        peerMTU = Server->getPeerMTU(Server->getConnId()) - 5;
-        maxTransferSize = peerMTU > BLE_BUFFER_SIZE ? BLE_BUFFER_SIZE : peerMTU;
-
-        if (maxTransferSize != oldTransferSize)
-            log_e(">> Max BLE transfer size set to %u", maxTransferSize);
-    }
-
-    if (maxTransferSize < MIN_MTU)
         return 0;
 
     size_t written = 0;
@@ -174,25 +169,15 @@ size_t BleSerial::write(const uint8_t *buffer, size_t bufferSize) {
     return written;
 }
 
-size_t BleSerial::print(const char *str) {
-    if (Server->getConnectedCount() < 1)
-        return 0;
-    size_t written = 0;
-    for (unsigned counter = 0; str[counter] != '\0'; counter++)
-        written += this->write(str[counter]);
-    flush();
-    return written;
-}
-
-void BleSerial::end() { BLEDevice::deinit(); }
+void BleSerial::end() { BLEDevice::deinit(true); }
 
 void BleSerial::flush() {
     if (this->transmitBufferLength) {
         TxCharacteristic->setValue(this->transmitBuffer,
                                    this->transmitBufferLength);
         this->transmitBufferLength = 0;
+        TxCharacteristic->notify(true);
     }
-    TxCharacteristic->notify(true);
 }
 
 void BleSerial::onWrite(BLECharacteristic *pCharacteristic) {
