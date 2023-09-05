@@ -187,7 +187,8 @@ static void rebootMCU() {
 }
 
 static void temperatureMCU() {
-    snprintf(outputLog, outputLogMaxLength, "MCU temperature: %.1f C.", temperatureRead()); 
+    snprintf(outputLog, outputLogMaxLength, "MCU temperature: %.1f C.",
+             temperatureRead());
     printlog();
 }
 
