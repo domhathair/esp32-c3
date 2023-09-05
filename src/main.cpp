@@ -1,7 +1,7 @@
-#include "BleHash.h"
-#include "BleParser.h"
-#include "BleSerial.h"
 #include <Arduino.h>
+#include <BleHash.h>
+#include <BleParser.h>
+#include <BleSerial.h>
 #include <ESPAsyncWebServer.h>
 #include <Preferences.h>
 #include <WiFi.h>
@@ -58,7 +58,9 @@ class Ble : public BleParser, public BleHash {
                     break;
                 case '\n':
                     if (Flag.CR) {
-                        String string = readString();
+                        String string;// = readString();
+                        for (int byte = '\0'; (byte = read()) > 0;)
+                            string += byte;
                         parseString(string, " ,.;:!?/\n\r");
                         log_e(">> Received: %s", string.c_str());
                         Flag.SL = false;
