@@ -58,7 +58,7 @@ class Ble : public BleParser, public BleHash {
                     break;
                 case '\n':
                     if (Flag.CR) {
-                        String string;// = readString();
+                        String string; // = readString();
                         for (int byte = '\0'; (byte = read()) > 0;)
                             string += byte;
                         parseString(string, " ,.;:!?/\n\r");
