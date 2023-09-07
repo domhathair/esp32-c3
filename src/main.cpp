@@ -2,9 +2,9 @@
 #include <BleHash.h>
 #include <BleParser.h>
 #include <BleSerial.h>
-#include <ESPAsyncWebServer.h>
 #include <Preferences.h>
 #include <WiFi.h>
+#include <WiFiClient.h>
 
 #define RED_LED 0
 #define GREEN_LED 1
@@ -12,16 +12,17 @@
 
 const unsigned creditianMaxLength = 32;
 const unsigned outputLogMaxLength = 128;
+const unsigned port = 80;
 char ssid[creditianMaxLength] = {0};
 char pass[creditianMaxLength] = {0};
+char addr[creditianMaxLength] = {0};
 char outputLog[outputLogMaxLength] = {0};
-AsyncWebServer server(80);
-char *localIP = 0;
 String BLEName = "BLE-UART";
 Preferences Storage;
 const char *filename = "settings";
 const char *ssidKey = "ssid";
 const char *passKey = "pass";
+const char *addrKey = "addr";
 
 static inline void printlog();
 static void initWifiCreditian(const char *, char *);
@@ -62,7 +63,7 @@ class Ble : public BleParser, public BleHash {
                 case '\n':
                     if (Flag.CR) {
                         String string = readString();
-                        parseString(string, " ,.;:!?/%\n\r");
+                        parseString(string, " ,;:!?/%\n\r");
                         log_e(">> Received: %s", string.c_str());
                         Flag.PR = false;
                     }
@@ -78,12 +79,14 @@ class Ble : public BleParser, public BleHash {
     void initBleHash() override {
         commandList[hash("ssid")] = []() { changeWifiCreditian(ssid); };
         commandList[hash("pass")] = []() { changeWifiCreditian(pass); };
+        commandList[hash("addr")] = []() { changeWifiCreditian(addr); };
         commandList[hash("save")] = []() {
             snprintf(outputLog, outputLogMaxLength,
                      "Saved Wi-Fi creditians <\"key\": creditian>:");
             printlog();
             saveWifiCreditian(ssidKey, ssid);
             saveWifiCreditian(passKey, pass);
+            saveWifiCreditian(addrKey, addr);
         };
         commandList[hash("connect")] = []() { connectToWiFi(ssid, pass); };
         commandList[hash("check")] = []() { checkWifiCreditian(); };
@@ -91,6 +94,8 @@ class Ble : public BleParser, public BleHash {
         commandList[hash("temperature")] = []() { temperatureMCU(); };
     }
 } Ble;
+
+WiFiClient Client;
 
 static inline void printlog() {
     if (Ble.connected())
@@ -104,7 +109,7 @@ static void initWifiCreditian(const char *key, char *creditian) {
         snprintf(outputLog, outputLogMaxLength,
                  "Found creditian under key \"%s\": %s", key, creditian);
     } else {
-        const char *basicCreditian = "hotspot";
+        const char *basicCreditian = "dummy";
         strncpy(creditian, basicCreditian, creditianMaxLength);
         Storage.putString(key, creditian);
         snprintf(outputLog, outputLogMaxLength,
@@ -148,23 +153,25 @@ static void saveWifiCreditian(const char *key, char *creditian) {
 }
 
 static void connectToWiFi(char *ssid, char *pass) {
+    wl_status_t status = WL_IDLE_STATUS;
     unsigned times = 0;
     const unsigned timesMax = 32;
 
     WiFi.begin(ssid, pass);
-    while (WiFi.status() != WL_CONNECTED && times++ < timesMax)
-        delay(10);
+    while ((status = WiFi.status()) != WL_CONNECTED && times++ < timesMax)
+        delay(0x40);
 
     if (times < timesMax) {
-        server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
-            request->send(200, "text/plain", "Hello, World!\n");
-        });
-
-        server.begin();
-
-        snprintf(outputLog, outputLogMaxLength, "Wi-Fi local IP: %s",
-                 localIP = (char *)WiFi.localIP().toString().c_str());
-        ledcWrite(GREEN_LED, Led.duty);
+        snprintf(outputLog, outputLogMaxLength, "Connecting to server...");
+        printlog();
+        if (Client.connect(addr, port)) {
+            snprintf(outputLog, outputLogMaxLength,
+                     "Connected to server succesfully!");
+            ledcWrite(GREEN_LED, Led.duty);
+        } else {
+            snprintf(outputLog, outputLogMaxLength,
+                     "Failed to connect to the server.");
+        }
     } else {
         snprintf(outputLog, outputLogMaxLength,
                  "Wi-Fi not connected after %u times.", timesMax);
@@ -175,7 +182,8 @@ static void connectToWiFi(char *ssid, char *pass) {
 
 static void checkWifiCreditian() {
     snprintf(outputLog, outputLogMaxLength,
-             "Wi-Fi creditians <ssid, pass>: %s, %s.", ssid, pass);
+             "Wi-Fi creditians <ssid, pass, addr>: %s, %s, %s.", ssid, pass,
+             addr);
     printlog();
 }
 
@@ -214,6 +222,7 @@ void setup() {
 
     initWifiCreditian(ssidKey, ssid);
     initWifiCreditian(passKey, pass);
+    initWifiCreditian(addrKey, addr);
 
     connectToWiFi(ssid, pass);
 
@@ -226,8 +235,6 @@ void setup() {
 
 void loop() {
     static bool state = true;
-    /*static uint32_t led = 0;
-    static uint32_t times = 0;*/
     static bool connectFlag = false;
     static uint8_t duty = Led.duty;
 
@@ -250,9 +257,7 @@ void loop() {
                 }
             }
         }
-        /*Ble.printf("Times: %d.\r\n", times++);*/
     } else {
-        /*times = 0;*/
         if (connectFlag) {
             log_e(">> Bluetooth LE disconnected.");
             connectFlag = false;
@@ -271,6 +276,6 @@ void loop() {
         break;
     }
     ledcWrite(RED_LED, duty);
-    delay(10);
 #endif // DEBUG
+    delay(10);
 }
