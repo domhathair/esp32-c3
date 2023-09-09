@@ -17,7 +17,7 @@ char ssid[creditianMaxLength] = {0};
 char pass[creditianMaxLength] = {0};
 char addr[creditianMaxLength] = {0};
 char outputLog[outputLogMaxLength] = {0};
-String BLEName = "BLE-UART";
+String BLEName("BLE-MAC " + WiFi.macAddress());
 Preferences Storage;
 const char *filename = "settings";
 const char *ssidKey = "ssid";
@@ -27,7 +27,7 @@ const char *addrKey = "addr";
 static inline void printlog();
 static void initWifiCreditian(const char *, char *);
 static void changeWifiCreditian(char *);
-static void saveWifiCreditian(const char *key, char *creditian);
+static void saveWifiCreditian(const char *, char *);
 static void connectToWiFi(char *, char *);
 static void checkWifiCreditian();
 static void rebootMCU();
@@ -155,7 +155,7 @@ static void saveWifiCreditian(const char *key, char *creditian) {
 static void connectToWiFi(char *ssid, char *pass) {
     wl_status_t status = WL_IDLE_STATUS;
     unsigned times = 0;
-    const unsigned timesMax = 32;
+    const unsigned timesMax = 64;
 
     WiFi.begin(ssid, pass);
     while ((status = WiFi.status()) != WL_CONNECTED && times++ < timesMax)
@@ -167,7 +167,6 @@ static void connectToWiFi(char *ssid, char *pass) {
         if (Client.connect(addr, port)) {
             snprintf(outputLog, outputLogMaxLength,
                      "Connected to server succesfully!");
-            ledcWrite(GREEN_LED, Led.duty);
         } else {
             snprintf(outputLog, outputLogMaxLength,
                      "Failed to connect to the server.");
@@ -211,6 +210,8 @@ void setup() {
     ledcAttachPin(Led.blue, BLUE_LED);
 
     ledcWrite(RED_LED, Led.duty);
+    ledcWrite(GREEN_LED, 0U);
+    ledcWrite(BLUE_LED, 0U);
 
     Storage.begin(filename);
 
@@ -235,14 +236,17 @@ void setup() {
 
 void loop() {
     static bool state = true;
-    static bool connectFlag = false;
+    static struct Flag {
+        bool ble : 1;
+        bool wifi : 1;
+    } Flag = {0};
     static uint8_t duty = Led.duty;
 
     if (Ble.connected()) {
-        if (!connectFlag) {
+        if (!Flag.ble) {
             snprintf(outputLog, outputLogMaxLength, "Bluetooth LE connected.");
             printlog();
-            connectFlag = true;
+            Flag.ble = true;
         }
         if (Ble.isParsed() && !Ble.it) {
             for (; Ble.it < Ble.argc; Ble.it++) {
@@ -258,9 +262,30 @@ void loop() {
             }
         }
     } else {
-        if (connectFlag) {
+        if (Flag.ble) {
             log_e(">> Bluetooth LE disconnected.");
-            connectFlag = false;
+            Flag.ble = false;
+        }
+    }
+
+    if (Client.connected()) {
+        if (!Flag.wifi) {
+            snprintf(outputLog, outputLogMaxLength,
+                     "Main loop Wi-Fi flag activated!");
+            printlog();
+            Flag.wifi = true;
+            ledcWrite(GREEN_LED, Led.duty);
+            Client.println("Привет, я клиент!");
+        }
+
+    } else {
+        if (Flag.wifi) {
+            snprintf(outputLog, outputLogMaxLength, "Wi-Fi disconnected.");
+            printlog();
+            Client.stop();
+            WiFi.disconnect(true);
+            Flag.wifi = false;
+            ledcWrite(GREEN_LED, 0U);
         }
     }
 
