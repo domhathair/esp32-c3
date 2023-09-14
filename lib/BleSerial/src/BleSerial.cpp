@@ -152,8 +152,8 @@ size_t BleSerial::write(uint8_t byte) {
     if (Server->getConnectedCount() < 1)
         return 0;
     this->transmitBuffer[this->transmitBufferLength++] = byte;
-    if (this->transmitBufferLength == maxTransferSize ||
-        this->transmitBufferLength == BLE_MTU)
+    if (this->transmitBufferLength == maxTransferSize /* ||
+        this->transmitBufferLength == BLE_MTU */)
         flush();
     return 1;
 }

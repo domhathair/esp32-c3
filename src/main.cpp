@@ -5,6 +5,7 @@
 #include <Preferences.h>
 #include <WiFi.h>
 #include <WiFiClient.h>
+#include <WiFiCoder.h>
 
 #define RED_LED 0
 #define GREEN_LED 1
@@ -82,7 +83,7 @@ class Ble : public BleParser, public BleHash {
         commandList[hash("addr")] = []() { changeWifiCreditian(addr); };
         commandList[hash("save")] = []() {
             snprintf(outputLog, outputLogMaxLength,
-                     "Saved Wi-Fi creditians <\"key\": creditian>:");
+                     "Saved Wi-Fi creditians <key: creditian>:");
             printlog();
             saveWifiCreditian(ssidKey, ssid);
             saveWifiCreditian(passKey, pass);
@@ -97,6 +98,8 @@ class Ble : public BleParser, public BleHash {
 
 WiFiClient Client;
 
+WiFiCoder Coder;
+
 static inline void printlog() {
     if (Ble.connected())
         Ble.printf("%s\r\n", outputLog);
@@ -107,13 +110,13 @@ static void initWifiCreditian(const char *key, char *creditian) {
     if (Storage.isKey(key)) {
         Storage.getString(key, creditian, creditianMaxLength);
         snprintf(outputLog, outputLogMaxLength,
-                 "Found creditian under key \"%s\": %s", key, creditian);
+                 "Found creditian under key <%s>: %s", key, creditian);
     } else {
         const char *basicCreditian = "dummy";
         strncpy(creditian, basicCreditian, creditianMaxLength);
         Storage.putString(key, creditian);
         snprintf(outputLog, outputLogMaxLength,
-                 "Created new creditian under key \"%s\": %s", key, creditian);
+                 "Created new creditian under key <%s>: %s", key, creditian);
     }
     printlog();
 }
@@ -131,12 +134,13 @@ static void changeWifiCreditian(char *creditian) {
             strncpy(creditian, Ble.argv[Ble.it], creditianMaxLength);
             creditian[length] = '\0';
             snprintf(outputLog, outputLogMaxLength,
-                     "Wi-Fi creditian %s changed to \"%s\".",
+                     "Wi-Fi creditian <%s> changed to \"%s\".",
                      Ble.argv[Ble.it - 1], creditian);
         }
     } else {
         snprintf(outputLog, outputLogMaxLength,
-                 "Fewer arguments than necessary in %s.", Ble.argv[Ble.it - 1]);
+                 "Fewer arguments than necessary in <%s>.",
+                 Ble.argv[Ble.it - 1]);
     }
     printlog();
 }
@@ -148,7 +152,7 @@ static void saveWifiCreditian(const char *key, char *creditian) {
         Storage.remove(key);
     Storage.putString(key, creditian);
 
-    snprintf(outputLog, outputLogMaxLength, "\"%s\": %s.", key, creditian);
+    snprintf(outputLog, outputLogMaxLength, "%s: %s.", key, creditian);
     printlog();
 }
 
@@ -268,16 +272,22 @@ void loop() {
         }
     }
 
-    if (Client.connected()) {
+    if (WiFi.isConnected() && Client.connected()) {
         if (!Flag.wifi) {
             snprintf(outputLog, outputLogMaxLength,
                      "Main loop Wi-Fi flag activated!");
             printlog();
             Flag.wifi = true;
             ledcWrite(GREEN_LED, Led.duty);
-            Client.println("Привет, я клиент!");
+            String greetings("Hello, I'm a client!");
+            Client.println(WiFi.macAddress() + "::" + Coder.codeStringWithAppend(greetings));
         }
-
+        if (Client.available()) {
+            String answer = Client.readString();
+            snprintf(outputLog, outputLogMaxLength,
+                     "Data received: ", answer.c_str());
+            printlog();
+        }
     } else {
         if (Flag.wifi) {
             snprintf(outputLog, outputLogMaxLength, "Wi-Fi disconnected.");

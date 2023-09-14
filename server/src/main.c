@@ -60,7 +60,9 @@ int main() {
         if (bytes_received <= 0) {
             break;
         }
-        printf("Data received: %.*s\n", (int)bytes_received, data);
+        fprintf(stdout, "Data received: %.*s\n", (int)bytes_received, data);
+        snprintf(data, BUFF_SIZE, "Hello, I'm a server!\n");
+        send(client_socket, data, strlen(data) + 1, 0);
     }
 
     close(client_socket);
