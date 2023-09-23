@@ -1,6 +1,6 @@
 #include "BleParser.h"
 
-unsigned BleParser::parseString(String string, const char *delim) {
+unsigned BleParser::parseString(String &string, const char *delim) {
 #if (DEBUG == 1)
     unsigned long timeStamp = micros();
 #endif // DEBUG

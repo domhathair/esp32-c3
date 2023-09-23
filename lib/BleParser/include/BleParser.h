@@ -4,9 +4,6 @@
 #include <Arduino.h>
 #include <cstring>
 
-#define PARSE_TIMEOUT 1000
-#define NO_SKIP_CHAR 1
-
 using namespace std;
 
 class BleParser : public BleSerial {
@@ -15,8 +12,8 @@ class BleParser : public BleSerial {
     unsigned argc;
     char **argv;
     unsigned
-    parseString(String string,
-                const char *delim = " ,.;:!?-\"()[]{}<>@#$%^&*_+=~`|\\/\n\r");
+    parseString(String &,
+                const char * = " ,.;:!?-\"()[]{}<>@#$%^&*_+=~`|\\/\n\r");
 
     bool isParsed();
 

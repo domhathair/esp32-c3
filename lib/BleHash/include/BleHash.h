@@ -7,8 +7,8 @@
 
 class BleHash {
   public:
-    static unsigned hash(const char *string, int h = 0);
-    char *toLower(const char *string);
+    static unsigned hash(const char *, int = 0);
+    char *toLower(const char *);
 
     virtual void initBleHash();
     std::map<unsigned, void (*)()> commandList;

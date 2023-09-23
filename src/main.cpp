@@ -11,14 +11,14 @@
 #define GREEN_LED 1
 #define BLUE_LED 2
 
-const unsigned creditianMaxLength = 32;
-const unsigned outputLogMaxLength = 128;
+const unsigned creditianLength = 32;
+const unsigned outputLogLength = 128;
 const unsigned port = 80;
-char ssid[creditianMaxLength] = {0};
-char pass[creditianMaxLength] = {0};
-char addr[creditianMaxLength] = {0};
-char outputLog[outputLogMaxLength] = {0};
-String BLEName("BLE-MAC " + WiFi.macAddress());
+char ssid[creditianLength] = {0};
+char pass[creditianLength] = {0};
+char addr[creditianLength] = {0};
+char outputLog[outputLogLength] = {0};
+String BLEName("BLE-MAC::" + WiFi.macAddress());
 Preferences Storage;
 const char *filename = "settings";
 const char *ssidKey = "ssid";
@@ -30,8 +30,10 @@ static void initWifiCreditian(const char *, char *);
 static void changeWifiCreditian(char *);
 static void saveWifiCreditian(const char *, char *);
 static void connectToWiFi(char *, char *);
+static void disconnectFromWiFi(bool);
 static void checkWifiCreditian();
 static void rebootMCU();
+static void deepSleepMCU();
 static void temperatureMCU();
 
 struct Led {
@@ -40,7 +42,7 @@ struct Led {
     const uint8_t blue;
     const uint8_t number;
     const uint8_t duty;
-} Led = {.red = 3U, .green = 4U, .blue = 5U, .number = 3U, .duty = 32U};
+} Led = {.red = 3U, .green = 4U, .blue = 5U, .number = 3U, .duty = 30U};
 
 class Ble : public BleParser, public BleHash {
   public:
@@ -82,7 +84,7 @@ class Ble : public BleParser, public BleHash {
         commandList[hash("pass")] = []() { changeWifiCreditian(pass); };
         commandList[hash("addr")] = []() { changeWifiCreditian(addr); };
         commandList[hash("save")] = []() {
-            snprintf(outputLog, outputLogMaxLength,
+            snprintf(outputLog, outputLogLength,
                      "Saved Wi-Fi creditians <key: creditian>:");
             printlog();
             saveWifiCreditian(ssidKey, ssid);
@@ -90,8 +92,10 @@ class Ble : public BleParser, public BleHash {
             saveWifiCreditian(addrKey, addr);
         };
         commandList[hash("connect")] = []() { connectToWiFi(ssid, pass); };
+        commandList[hash("disconnect")] = []() { disconnectFromWiFi(true); };
         commandList[hash("check")] = []() { checkWifiCreditian(); };
         commandList[hash("reboot")] = []() { rebootMCU(); };
+        commandList[hash("sleep")] = []() { deepSleepMCU(); };
         commandList[hash("temperature")] = []() { temperatureMCU(); };
     }
 } Ble;
@@ -108,14 +112,14 @@ static inline void printlog() {
 
 static void initWifiCreditian(const char *key, char *creditian) {
     if (Storage.isKey(key)) {
-        Storage.getString(key, creditian, creditianMaxLength);
-        snprintf(outputLog, outputLogMaxLength,
+        Storage.getString(key, creditian, creditianLength);
+        snprintf(outputLog, outputLogLength,
                  "Found creditian under key <%s>: %s", key, creditian);
     } else {
         const char *basicCreditian = "dummy";
-        strncpy(creditian, basicCreditian, creditianMaxLength);
+        strncpy(creditian, basicCreditian, creditianLength);
         Storage.putString(key, creditian);
-        snprintf(outputLog, outputLogMaxLength,
+        snprintf(outputLog, outputLogLength,
                  "Created new creditian under key <%s>: %s", key, creditian);
     }
     printlog();
@@ -125,20 +129,20 @@ static void changeWifiCreditian(char *creditian) {
     if (Ble.argc > Ble.it) {
         Ble.it++;
         unsigned length = strlen(Ble.argv[Ble.it]);
-        if (length > creditianMaxLength) {
-            snprintf(outputLog, outputLogMaxLength,
+        if (length > creditianLength) {
+            snprintf(outputLog, outputLogLength,
                      "Wi-Fi creditian length must be less than %u.",
-                     creditianMaxLength);
+                     creditianLength);
         } else {
-            memset(creditian, '\0', creditianMaxLength);
-            strncpy(creditian, Ble.argv[Ble.it], creditianMaxLength);
+            memset(creditian, '\0', creditianLength);
+            strncpy(creditian, Ble.argv[Ble.it], creditianLength);
             creditian[length] = '\0';
-            snprintf(outputLog, outputLogMaxLength,
+            snprintf(outputLog, outputLogLength,
                      "Wi-Fi creditian <%s> changed to \"%s\".",
                      Ble.argv[Ble.it - 1], creditian);
         }
     } else {
-        snprintf(outputLog, outputLogMaxLength,
+        snprintf(outputLog, outputLogLength,
                  "Fewer arguments than necessary in <%s>.",
                  Ble.argv[Ble.it - 1]);
     }
@@ -152,12 +156,13 @@ static void saveWifiCreditian(const char *key, char *creditian) {
         Storage.remove(key);
     Storage.putString(key, creditian);
 
-    snprintf(outputLog, outputLogMaxLength, "%s: %s.", key, creditian);
+    snprintf(outputLog, outputLogLength, "%s: %s.", key, creditian);
     printlog();
 }
 
 static void connectToWiFi(char *ssid, char *pass) {
     wl_status_t status = WL_IDLE_STATUS;
+    bool errorOccured = false;
     unsigned times = 0;
     const unsigned timesMax = 64;
 
@@ -166,58 +171,96 @@ static void connectToWiFi(char *ssid, char *pass) {
         delay(0x40);
 
     if (times < timesMax) {
-        snprintf(outputLog, outputLogMaxLength, "Connecting to server...");
+        snprintf(outputLog, outputLogLength, "Connecting to server...");
         printlog();
         if (Client.connect(addr, port)) {
-            snprintf(outputLog, outputLogMaxLength,
+            snprintf(outputLog, outputLogLength,
                      "Connected to server succesfully!");
         } else {
-            snprintf(outputLog, outputLogMaxLength,
+            snprintf(outputLog, outputLogLength,
                      "Failed to connect to the server.");
+            errorOccured = true;
         }
     } else {
-        snprintf(outputLog, outputLogMaxLength,
+        snprintf(outputLog, outputLogLength,
                  "Wi-Fi not connected after %u times.", timesMax);
-        WiFi.disconnect(true);
+        errorOccured = true;
     }
     printlog();
+    if (errorOccured) {
+        disconnectFromWiFi(false);
+    }
+}
+
+static void disconnectFromWiFi(bool printMessage) {
+    Client.stop();
+    wifi_mode_t currentMode = WiFi.getMode();
+    bool isEnabled = ((currentMode & WIFI_MODE_STA) != 0);
+    if (isEnabled) {
+        if (WiFi.disconnect(true)) {
+            if (printMessage) {
+                snprintf(outputLog, outputLogLength, "Wi-Fi disconnected.");
+                printlog();
+            }
+        } else {
+            snprintf(outputLog, outputLogLength,
+                     "Can not stop Wi-Fi! It's still running.");
+            printlog();
+        }
+    }
 }
 
 static void checkWifiCreditian() {
-    snprintf(outputLog, outputLogMaxLength,
+    snprintf(outputLog, outputLogLength,
              "Wi-Fi creditians <ssid, pass, addr>: %s, %s, %s.", ssid, pass,
              addr);
     printlog();
 }
 
 static void rebootMCU() {
-    snprintf(outputLog, outputLogMaxLength, "The device will now reboot!");
+    snprintf(outputLog, outputLogLength, "The device will now reboot!");
     printlog();
+    disconnectFromWiFi(false);
     delay(1000);
     esp_restart();
 }
 
+static void deepSleepMCU() {
+    snprintf(outputLog, outputLogLength, "The device goes to sleep.");
+    printlog();
+    disconnectFromWiFi(false);
+    delay(1000);
+    esp_deep_sleep_start();
+}
+
 static void temperatureMCU() {
-    snprintf(outputLog, outputLogMaxLength, "MCU temperature: %.1f C.",
+    snprintf(outputLog, outputLogLength, "MCU temperature: %.1f C.",
              temperatureRead());
     printlog();
 }
 
 void setup() {
     unsigned long timeStamp = millis();
-    ledcSetup(RED_LED, 500, 8);
-    ledcSetup(GREEN_LED, 500, 8);
-    ledcSetup(BLUE_LED, 500, 8);
+    if (!ledcSetup(RED_LED, 500, 8) || !ledcSetup(GREEN_LED, 500, 8) ||
+        !ledcSetup(BLUE_LED, 500, 8)) {
+        log_e(">> LED is not initialized correctly!");
+    }
 
     ledcAttachPin(Led.red, RED_LED);
     ledcAttachPin(Led.green, GREEN_LED);
     ledcAttachPin(Led.blue, BLUE_LED);
 
+#if (DEBUG == 1)
     ledcWrite(RED_LED, Led.duty);
+#else
+    ledcWrite(RED_LED, 0U);
+#endif // DEBUG
     ledcWrite(GREEN_LED, 0U);
     ledcWrite(BLUE_LED, 0U);
 
-    Storage.begin(filename);
+    if (Storage.begin(filename)) {
+        log_e(">> Storage error!");
+    }
 
     if (!Ble.begin(BLEName.c_str(), true))
         log_e(">> BLE did not start!");
@@ -233,8 +276,8 @@ void setup() {
 
     Storage.end();
 
-    snprintf(outputLog, outputLogMaxLength,
-             "Initialization completed in %u ms.", millis() - timeStamp);
+    snprintf(outputLog, outputLogLength, "Initialization completed in %u ms.",
+             millis() - timeStamp);
     printlog();
 }
 
@@ -248,21 +291,22 @@ void loop() {
 
     if (Ble.connected()) {
         if (!Flag.ble) {
-            snprintf(outputLog, outputLogMaxLength, "Bluetooth LE connected.");
+            snprintf(outputLog, outputLogLength, "Bluetooth LE connected.");
             printlog();
             Flag.ble = true;
         }
         if (Ble.isParsed() && !Ble.it) {
             for (; Ble.it < Ble.argc; Ble.it++) {
-                Ble.argv[Ble.it] = Ble.toLower(Ble.argv[Ble.it]);
-                auto it = Ble.commandList.find(Ble.hash(Ble.argv[Ble.it]));
+                char *arg = Ble.toLower(Ble.argv[Ble.it]);
+                auto it = Ble.commandList.find(Ble.hash(arg));
                 if (it != Ble.commandList.end())
                     it->second();
                 else {
-                    snprintf(outputLog, outputLogMaxLength,
+                    snprintf(outputLog, outputLogLength,
                              "Unknown command received.");
                     printlog();
                 }
+                free(arg);
             }
         }
     } else {
@@ -274,39 +318,43 @@ void loop() {
 
     if (WiFi.isConnected() && Client.connected()) {
         if (!Flag.wifi) {
-            snprintf(outputLog, outputLogMaxLength,
+            snprintf(outputLog, outputLogLength,
                      "Main loop Wi-Fi flag activated!");
             printlog();
             Flag.wifi = true;
+#if (DEBUG == 1)
             ledcWrite(GREEN_LED, Led.duty);
+#endif // DEBUG
             String greetings("Hello, I'm a client!");
-            Client.println(WiFi.macAddress() + "::" + Coder.codeStringWithAppend(greetings));
+            Client.print(WiFi.macAddress() +
+                         "::" + Coder.codeStringWithAppend(greetings));
         }
         if (Client.available()) {
             String answer = Client.readString();
-            snprintf(outputLog, outputLogMaxLength,
+            snprintf(outputLog, outputLogLength,
                      "Data received: ", answer.c_str());
             printlog();
         }
     } else {
         if (Flag.wifi) {
-            snprintf(outputLog, outputLogMaxLength, "Wi-Fi disconnected.");
+            snprintf(outputLog, outputLogLength, "Wi-Fi main loop ended.");
             printlog();
-            Client.stop();
-            WiFi.disconnect(true);
+            disconnectFromWiFi(true);
             Flag.wifi = false;
+#if (DEBUG == 1)
             ledcWrite(GREEN_LED, 0U);
+#endif // DEBUG
         }
     }
 
 #if (DEBUG == 1)
     switch (state) {
     case true:
-        if (++duty == 0xFF)
+        if ((duty += 0x5) == 0xFF)
             state = false;
         break;
     case false:
-        if (--duty == 0x00)
+        if ((duty -= 0x5) == 0x00)
             state = true;
         break;
     }

@@ -17,16 +17,12 @@ UART_TX_CHAR_UUID = "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
 def sliced(data: bytes, n: int) -> Iterator[bytes]:
     return takewhile(len, (data[i : i + n] for i in count(0, n)))
 
-
 async def uart_terminal():
     def match_nus_uuid(device: BLEDevice, adv: AdvertisementData):
         if UART_SERVICE_UUID.lower() in adv.service_uuids:
             return True
-
         return False
-
     device = await BleakScanner.find_device_by_filter(match_nus_uuid)
-
     if device is None:
         print("No matching device found, you may need to edit match_nus_uuid().")
         sys.exit(1)
@@ -37,30 +33,22 @@ async def uart_terminal():
             task.cancel()
 
     def handle_rx(_: BleakGATTCharacteristic, data: bytearray):
-        print("received:", data)
+        print("Received:", data)
 
     async with BleakClient(device, disconnected_callback=handle_disconnect) as client:
         await client.start_notify(UART_TX_CHAR_UUID, handle_rx)
-
         print("Connected, start typing and press ENTER...")
-
         loop = asyncio.get_running_loop()
         nus = client.services.get_service(UART_SERVICE_UUID)
         rx_char = nus.get_characteristic(UART_RX_CHAR_UUID)
-
         while True:
             data = await loop.run_in_executor(None, sys.stdin.buffer.readline)
-
             if not data:
                 break
-
             data = data.replace(b"\n", b"\r\n")
-
             for s in sliced(data, rx_char.max_write_without_response_size):
                 await client.write_gatt_char(rx_char, s, response=False)
-
-            print("sent:", data)
-
+            print("Sent:", data)
 
 if __name__ == "__main__":
     try:
