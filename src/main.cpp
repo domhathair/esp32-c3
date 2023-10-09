@@ -1,3 +1,4 @@
+#include <AdcSelf.h>
 #include <Arduino.h>
 #include <BleHash.h>
 #include <BleParser.h>
@@ -7,25 +8,14 @@
 #include <WiFiClient.h>
 #include <WiFiCoder.h>
 
-#define RED_LED 0
-#define GREEN_LED 1
-#define BLUE_LED 2
+#define RED_LED_CHANNEL 0U
+#define GREEN_LED_CHANNEL 1U
+#define BLUE_LED_CHANNEL 2U
+#define GATE_CHANNEL_0 6U
+#define GATE_CHANNEL_1 7U
+#define GATE_CHANNEL_2 8U
+#define CLK_PIN 9U
 
-const unsigned creditianLength = 32;
-const unsigned outputLogLength = 128;
-const unsigned port = 80;
-char ssid[creditianLength] = {0};
-char pass[creditianLength] = {0};
-char addr[creditianLength] = {0};
-char outputLog[outputLogLength] = {0};
-String BLEName("BLE-MAC::" + WiFi.macAddress());
-Preferences Storage;
-const char *filename = "settings";
-const char *ssidKey = "ssid";
-const char *passKey = "pass";
-const char *addrKey = "addr";
-
-static inline void printlog();
 static void initWifiCreditian(const char *, char *);
 static void changeWifiCreditian(char *);
 static void saveWifiCreditian(const char *, char *);
@@ -35,6 +25,30 @@ static void checkWifiCreditian();
 static void rebootMCU();
 static void deepSleepMCU();
 static void temperatureMCU();
+static void ARDUINO_ISR_ATTR onHighClkPinInterrupt();
+static void ARDUINO_ISR_ATTR timer0Interrupt();
+
+const unsigned creditianLength = 32U;
+const unsigned outputLogLength = 128U;
+const unsigned port = 80U;
+const unsigned gates = 3U;
+const unsigned bitsInPackage = 6U;
+const unsigned timerDivider = 80U;
+const unsigned timerStep = 47000U / 12U;
+const unsigned wires = (unsigned)AdcSelf::sizeof_ADC * gates;
+unsigned short wireData[bitsInPackage][wires] = {0U};
+static char ssid[creditianLength] = {0};
+static char pass[creditianLength] = {0};
+static char addr[creditianLength] = {0};
+static char outputLog[outputLogLength] = {0};
+static String BLEName("BLE-MAC::" + WiFi.macAddress());
+const char *filename = "settings";
+const char *ssidKey = "ssid";
+const char *passKey = "pass";
+const char *addrKey = "addr";
+const unsigned activeTimers = 1U;
+static hw_timer_t *timer0 = NULL;
+static bool setupReady = false;
 
 struct Led {
     const uint8_t red;
@@ -42,87 +56,94 @@ struct Led {
     const uint8_t blue;
     const uint8_t number;
     const uint8_t duty;
-} Led = {.red = 3U, .green = 4U, .blue = 5U, .number = 3U, .duty = 30U};
+} Led = {.red = 10U, .green = 11U, .blue = 12U, .number = 3U, .duty = 30U};
 
 class Ble : public BleParser, public BleHash {
   public:
-    void onWrite(BLECharacteristic *pCharacteristic) override {
-        static struct {
-            bool CR : 1;
-            bool PR : 1;
-        } Flag = {.CR = false, .PR = false};
-        if (pCharacteristic->getUUID().toString() == BLE_RX_UUID) {
-            String value(pCharacteristic->getValue().data());
-            for (unsigned counter = 0; counter < value.length(); counter++) {
-                if (Flag.PR)
-                    receiveBuffer.add(value[counter]);
-                switch (value[counter]) {
-                case '#':
-                    Flag.PR = true;
-                    break;
-                case '\r':
-                    Flag.CR = true;
-                    break;
-                case '\n':
-                    if (Flag.CR) {
-                        String string = readString();
-                        parseString(string, " ,;:!?/%\n\r");
-                        log_e(">> Received: %s", string.c_str());
-                        Flag.PR = false;
-                    }
-                    [[fallthrough]];
-                default:
-                    Flag.CR = false;
-                    break;
-                }
-            }
-        }
-    }
-
-    void initBleHash() override {
-        commandList[hash("ssid")] = []() { changeWifiCreditian(ssid); };
-        commandList[hash("pass")] = []() { changeWifiCreditian(pass); };
-        commandList[hash("addr")] = []() { changeWifiCreditian(addr); };
-        commandList[hash("save")] = []() {
-            snprintf(outputLog, outputLogLength,
-                     "Saved Wi-Fi creditians <key: creditian>:");
-            printlog();
-            saveWifiCreditian(ssidKey, ssid);
-            saveWifiCreditian(passKey, pass);
-            saveWifiCreditian(addrKey, addr);
-        };
-        commandList[hash("connect")] = []() { connectToWiFi(ssid, pass); };
-        commandList[hash("disconnect")] = []() { disconnectFromWiFi(true); };
-        commandList[hash("check")] = []() { checkWifiCreditian(); };
-        commandList[hash("reboot")] = []() { rebootMCU(); };
-        commandList[hash("sleep")] = []() { deepSleepMCU(); };
-        commandList[hash("temperature")] = []() { temperatureMCU(); };
-    }
+    void onWrite(BLECharacteristic *pCharacteristic) override;
+    void initBleHash() override;
 } Ble;
 
 WiFiClient Client;
 
 WiFiCoder Coder;
 
-static inline void printlog() {
-    if (Ble.connected())
-        Ble.printf("%s\r\n", outputLog);
-    log_e(">> %s", outputLog);
+AdcSelf Adc;
+
+Preferences Storage;
+
+#define printlog(...)                                                          \
+    {                                                                          \
+        snprintf(outputLog, outputLogLength, __VA_ARGS__);                     \
+        if (Ble.connected()) {                                                 \
+            Ble.printf("%s\r\n", outputLog);                                   \
+        }                                                                      \
+        log_e(">> %s", outputLog);                                             \
+    }
+
+void Ble::onWrite(BLECharacteristic *pCharacteristic) {
+    static struct {
+        bool CR : 1;
+        bool PR : 1;
+    } Flag = {.CR = false, .PR = false};
+    if (pCharacteristic->getUUID().toString() == BLE_RX_UUID) {
+        String value(pCharacteristic->getValue().data());
+        for (unsigned counter = 0; counter < value.length(); counter++) {
+            if (Flag.PR)
+                receiveBuffer.add(value[counter]);
+            switch (value[counter]) {
+            case '#':
+                Flag.PR = true;
+                break;
+            case '\r':
+                Flag.CR = true;
+                break;
+            case '\n':
+                if (Flag.PR && Flag.CR) {
+                    String string = readString();
+                    parseString(string, " ,;:!?/%\n\r");
+#if (DEBUG == 1)
+                    log_e(">> Received: %s", string.c_str());
+#endif // DEBUG
+                    Flag.PR = false;
+                }
+                [[fallthrough]];
+            default:
+                Flag.CR = false;
+                break;
+            }
+        }
+    }
+}
+
+void Ble::initBleHash() {
+    commandList[hash("ssid")] = []() { changeWifiCreditian(ssid); };
+    commandList[hash("pass")] = []() { changeWifiCreditian(pass); };
+    commandList[hash("addr")] = []() { changeWifiCreditian(addr); };
+    commandList[hash("save")] = []() {
+        log_e(">> Saved Wi-Fi creditians <key: creditian>:");
+        saveWifiCreditian(ssidKey, ssid);
+        saveWifiCreditian(passKey, pass);
+        saveWifiCreditian(addrKey, addr);
+    };
+    commandList[hash("connect")] = []() { connectToWiFi(ssid, pass); };
+    commandList[hash("disconnect")] = []() { disconnectFromWiFi(true); };
+    commandList[hash("check")] = []() { checkWifiCreditian(); };
+    commandList[hash("reboot")] = []() { rebootMCU(); };
+    commandList[hash("sleep")] = []() { deepSleepMCU(); };
+    commandList[hash("temperature")] = []() { temperatureMCU(); };
 }
 
 static void initWifiCreditian(const char *key, char *creditian) {
     if (Storage.isKey(key)) {
         Storage.getString(key, creditian, creditianLength);
-        snprintf(outputLog, outputLogLength,
-                 "Found creditian under key <%s>: %s", key, creditian);
+        printlog("Found creditian under key <%s>: %s", key, creditian);
     } else {
         const char *basicCreditian = "dummy";
         strncpy(creditian, basicCreditian, creditianLength);
         Storage.putString(key, creditian);
-        snprintf(outputLog, outputLogLength,
-                 "Created new creditian under key <%s>: %s", key, creditian);
+        printlog("Created new creditian under key <%s>: %s", key, creditian);
     }
-    printlog();
 }
 
 static void changeWifiCreditian(char *creditian) {
@@ -130,23 +151,19 @@ static void changeWifiCreditian(char *creditian) {
         Ble.it++;
         unsigned length = strlen(Ble.argv[Ble.it]);
         if (length > creditianLength) {
-            snprintf(outputLog, outputLogLength,
-                     "Wi-Fi creditian length must be less than %u.",
+            printlog("Wi-Fi creditian length must be less than %u.",
                      creditianLength);
         } else {
             memset(creditian, '\0', creditianLength);
             strncpy(creditian, Ble.argv[Ble.it], creditianLength);
             creditian[length] = '\0';
-            snprintf(outputLog, outputLogLength,
-                     "Wi-Fi creditian <%s> changed to \"%s\".",
+            printlog("Wi-Fi creditian <%s> changed to \"%s\".",
                      Ble.argv[Ble.it - 1], creditian);
         }
     } else {
-        snprintf(outputLog, outputLogLength,
-                 "Fewer arguments than necessary in <%s>.",
+        printlog("Fewer arguments than necessary in <%s>.",
                  Ble.argv[Ble.it - 1]);
     }
-    printlog();
 }
 
 static void saveWifiCreditian(const char *key, char *creditian) {
@@ -156,37 +173,31 @@ static void saveWifiCreditian(const char *key, char *creditian) {
         Storage.remove(key);
     Storage.putString(key, creditian);
 
-    snprintf(outputLog, outputLogLength, "%s: %s.", key, creditian);
-    printlog();
+    printlog("%s: %s.", key, creditian);
 }
 
 static void connectToWiFi(char *ssid, char *pass) {
     wl_status_t status = WL_IDLE_STATUS;
     bool errorOccured = false;
-    unsigned times = 0;
-    const unsigned timesMax = 64;
+    unsigned times = 0U;
+    const unsigned timesMax = 64U;
 
     WiFi.begin(ssid, pass);
     while ((status = WiFi.status()) != WL_CONNECTED && times++ < timesMax)
-        delay(0x40);
+        delay(0x10U);
 
     if (times < timesMax) {
-        snprintf(outputLog, outputLogLength, "Connecting to server...");
-        printlog();
+        printlog("Connecting to server...");
         if (Client.connect(addr, port)) {
-            snprintf(outputLog, outputLogLength,
-                     "Connected to server succesfully!");
+            printlog("Connected to server succesfully!");
         } else {
-            snprintf(outputLog, outputLogLength,
-                     "Failed to connect to the server.");
+            printlog("Failed to connect to the server.");
             errorOccured = true;
         }
     } else {
-        snprintf(outputLog, outputLogLength,
-                 "Wi-Fi not connected after %u times.", timesMax);
+        printlog("Wi-Fi not connected after %u times.", timesMax);
         errorOccured = true;
     }
-    printlog();
     if (errorOccured) {
         disconnectFromWiFi(false);
     }
@@ -199,74 +210,136 @@ static void disconnectFromWiFi(bool printMessage) {
     if (isEnabled) {
         if (WiFi.disconnect(true)) {
             if (printMessage) {
-                snprintf(outputLog, outputLogLength, "Wi-Fi disconnected.");
-                printlog();
+                printlog("Wi-Fi disconnected.");
             }
         } else {
-            snprintf(outputLog, outputLogLength,
-                     "Can not stop Wi-Fi! It's still running.");
-            printlog();
+            printlog("Can not stop Wi-Fi! It's still running.");
         }
     }
 }
 
 static void checkWifiCreditian() {
-    snprintf(outputLog, outputLogLength,
-             "Wi-Fi creditians <ssid, pass, addr>: %s, %s, %s.", ssid, pass,
+    printlog("Wi-Fi creditians <ssid, pass, addr>: %s, %s, %s.", ssid, pass,
              addr);
-    printlog();
 }
 
 static void rebootMCU() {
-    snprintf(outputLog, outputLogLength, "The device will now reboot!");
-    printlog();
+    printlog("The device will now reboot!");
     disconnectFromWiFi(false);
     delay(1000);
     esp_restart();
 }
 
 static void deepSleepMCU() {
-    snprintf(outputLog, outputLogLength, "The device goes to sleep.");
-    printlog();
+    printlog("The device goes to sleep.");
     disconnectFromWiFi(false);
     delay(1000);
     esp_deep_sleep_start();
 }
 
 static void temperatureMCU() {
-    snprintf(outputLog, outputLogLength, "MCU temperature: %.1f C.",
-             temperatureRead());
-    printlog();
+    printlog("MCU temperature: %.1f C.", temperatureRead());
+}
+
+static void ARDUINO_ISR_ATTR onHighClkPinInterrupt() {
+    if (setupReady) {
+        detachInterrupt(digitalPinToInterrupt(CLK_PIN));
+
+        timerStart(timer0);
+
+        printlog("Clock signal caught.");
+    }
+    /* */
+}
+
+static void ARDUINO_ISR_ATTR timer0Interrupt() {
+    static unsigned char currentBit = 0;
+#if (DEBUG == 1)
+    static unsigned long oldStamp = 0;
+    unsigned long timeStamp = micros();
+    printlog("%s: %u us.", (!oldStamp) ? "timer started at" : "timer duration",
+             timeStamp - oldStamp);
+    oldStamp = timeStamp;
+#endif // DEBUG
+
+    if (currentBit < bitsInPackage) {
+        for (unsigned gate = 0; gate < gates; gate++) {
+            digitalWrite(GATE_CHANNEL_0 + gate, true);
+            for (unsigned pin = 0; pin < AdcSelf::sizeof_ADC; pin++) {
+                wireData[currentBit][gate * (unsigned)AdcSelf::sizeof_ADC +
+                                     pin] = Adc.read((AdcSelf::channel_t)pin);
+            }
+            digitalWrite(GATE_CHANNEL_0 + gate, false);
+        }
+        currentBit++;
+    } else {
+        timerStop(timer0);
+        currentBit = 0;
+        oldStamp = 0;
+        printlog("Data copied to buffer.");
+    }
 }
 
 void setup() {
     unsigned long timeStamp = millis();
-    if (!ledcSetup(RED_LED, 500, 8) || !ledcSetup(GREEN_LED, 500, 8) ||
-        !ledcSetup(BLUE_LED, 500, 8)) {
-        log_e(">> LED is not initialized correctly!");
+    bool errorOccured = false;
+
+    if (!Ble.begin(BLEName.c_str(), true)) {
+        log_e(">> BLE did not start!");
+        errorOccured = true;
+    } else {
+        printlog("BLE started after name %s", BLEName.c_str());
+    }
+    Ble.initBleHash();
+
+    if (!ledcSetup(RED_LED_CHANNEL, 500, 8) ||
+        !ledcSetup(GREEN_LED_CHANNEL, 500, 8) ||
+        !ledcSetup(BLUE_LED_CHANNEL, 500, 8)) {
+        printlog("LED is not initialized correctly at %u ms.",
+                 millis() - timeStamp);
+        errorOccured = true;
     }
 
-    ledcAttachPin(Led.red, RED_LED);
-    ledcAttachPin(Led.green, GREEN_LED);
-    ledcAttachPin(Led.blue, BLUE_LED);
+    ledcAttachPin(Led.red, RED_LED_CHANNEL);
+    ledcAttachPin(Led.green, GREEN_LED_CHANNEL);
+    ledcAttachPin(Led.blue, BLUE_LED_CHANNEL);
+    printlog("LED attached to their channels at %u ms.", millis() - timeStamp);
+
+    timer0 = timerBegin(0, timerDivider, true);
+    timerStop(timer0);
+    timerAttachInterrupt(timer0, &timer0Interrupt, true);
+    timerAlarmWrite(timer0, timerStep, true);
+    timerAlarmEnable(timer0);
+    timerWrite(timer0, 0U);
+    printlog("Timer0 initiated at %u ms.", millis() - timeStamp);
+
+    for (unsigned pin = 0; pin < AdcSelf::sizeof_ADC; pin++) {
+        if (!Adc.attachPin((AdcSelf::channel_t)pin)) {
+            printlog("The ADC did not work properly!");
+            errorOccured = true;
+        }
+    }
+    for (unsigned gate = 0; gate < gates; gate++) {
+        pinMode(GATE_CHANNEL_0 + gate, OUTPUT); /*Communicator gates*/
+        digitalWrite(GATE_CHANNEL_0 + gate, false);
+    }
+    pinMode(CLK_PIN, OPEN_DRAIN);
+    attachInterrupt(digitalPinToInterrupt(CLK_PIN), &onHighClkPinInterrupt,
+                    RISING);
+    printlog("Digital pins initiated at %u ms.", millis() - timeStamp);
 
 #if (DEBUG == 1)
-    ledcWrite(RED_LED, Led.duty);
+    ledcWrite(RED_LED_CHANNEL, Led.duty);
 #else
-    ledcWrite(RED_LED, 0U);
+    ledcWrite(RED_LED_CHANNEL, 0U);
 #endif // DEBUG
-    ledcWrite(GREEN_LED, 0U);
-    ledcWrite(BLUE_LED, 0U);
+    ledcWrite(GREEN_LED_CHANNEL, 0U);
+    ledcWrite(BLUE_LED_CHANNEL, 0U);
 
-    if (Storage.begin(filename)) {
-        log_e(">> Storage error!");
+    if (!Storage.begin(filename)) {
+        printlog("Storage error at %u ms.", millis() - timeStamp);
+        errorOccured = true;
     }
-
-    if (!Ble.begin(BLEName.c_str(), true))
-        log_e(">> BLE did not start!");
-    else
-        log_e(">> BLE started after name %s", BLEName);
-    Ble.initBleHash();
 
     initWifiCreditian(ssidKey, ssid);
     initWifiCreditian(passKey, pass);
@@ -276,9 +349,10 @@ void setup() {
 
     Storage.end();
 
-    snprintf(outputLog, outputLogLength, "Initialization completed in %u ms.",
+    printlog("Initialization completed %s in %u ms.",
+             errorOccured ? "with errors" : "successfully",
              millis() - timeStamp);
-    printlog();
+    setupReady = true;
 }
 
 void loop() {
@@ -291,8 +365,7 @@ void loop() {
 
     if (Ble.connected()) {
         if (!Flag.ble) {
-            snprintf(outputLog, outputLogLength, "Bluetooth LE connected.");
-            printlog();
+            printlog("Bluetooth LE connected.");
             Flag.ble = true;
         }
         if (Ble.isParsed() && !Ble.it) {
@@ -302,28 +375,24 @@ void loop() {
                 if (it != Ble.commandList.end())
                     it->second();
                 else {
-                    snprintf(outputLog, outputLogLength,
-                             "Unknown command received.");
-                    printlog();
+                    printlog("Unknown command received.");
                 }
                 free(arg);
             }
         }
     } else {
         if (Flag.ble) {
-            log_e(">> Bluetooth LE disconnected.");
+            printlog("Bluetooth LE disconnected.");
             Flag.ble = false;
         }
     }
 
     if (WiFi.isConnected() && Client.connected()) {
         if (!Flag.wifi) {
-            snprintf(outputLog, outputLogLength,
-                     "Main loop Wi-Fi flag activated!");
-            printlog();
+            printlog("Main loop Wi-Fi flag activated!");
             Flag.wifi = true;
 #if (DEBUG == 1)
-            ledcWrite(GREEN_LED, Led.duty);
+            ledcWrite(GREEN_LED_CHANNEL, Led.duty);
 #endif // DEBUG
             String greetings("Hello, I'm a client!");
             Client.print(WiFi.macAddress() +
@@ -331,18 +400,15 @@ void loop() {
         }
         if (Client.available()) {
             String answer = Client.readString();
-            snprintf(outputLog, outputLogLength,
-                     "Data received: ", answer.c_str());
-            printlog();
+            printlog("Data received: ", answer.c_str());
         }
     } else {
         if (Flag.wifi) {
-            snprintf(outputLog, outputLogLength, "Wi-Fi main loop ended.");
-            printlog();
+            printlog("Wi-Fi main loop ended.");
             disconnectFromWiFi(true);
             Flag.wifi = false;
 #if (DEBUG == 1)
-            ledcWrite(GREEN_LED, 0U);
+            ledcWrite(GREEN_LED_CHANNEL, 0U);
 #endif // DEBUG
         }
     }
@@ -358,7 +424,7 @@ void loop() {
             state = true;
         break;
     }
-    ledcWrite(RED_LED, duty);
+    ledcWrite(RED_LED_CHANNEL, duty);
 #endif // DEBUG
-    delay(10);
+    delay(1);
 }
