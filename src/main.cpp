@@ -3,6 +3,8 @@
 #include <BleHash.h>
 #include <BleParser.h>
 #include <BleSerial.h>
+#include <DS18B20.h>
+#include <LcdParser.h>
 #include <Preferences.h>
 #include <WiFi.h>
 #include <WiFiClient.h>
@@ -10,11 +12,26 @@
 
 #define RED_LED_CHANNEL 0U
 #define GREEN_LED_CHANNEL 1U
-#define BLUE_LED_CHANNEL 2U
-#define GATE_CHANNEL_0 6U
-#define GATE_CHANNEL_1 7U
-#define GATE_CHANNEL_2 8U
-#define CLK_PIN 9U
+
+#define ADC1_CH0_PIN ADC1_CH0 /*GPIO0*/
+#define ADC1_CH1_PIN ADC1_CH1 /*GPIO1*/
+#define ADC1_CH2_PIN ADC1_CH2 /*GPIO2*/
+#define ADC1_CH3_PIN ADC1_CH3 /*GPIO3*/
+#define ADC1_CH4_PIN ADC1_CH4 /*GPIO4*/
+#define ADC2_CH0_PIN ADC2_CH0 /*GPIO5*/
+#define GATE_0_PIN 6U         /*GPIO6*/
+#define GATE_1_PIN 7U         /*GPIO7*/
+#define GATE_2_PIN 8U         /*GPIO8*/
+#if (DEBUG == 1)
+#define DEBUG_PIN 9U      /*GPIO9*/
+#endif                    // DEBUG
+#define CLK_PIN 10U       /*GPIO10*/
+#define RED_LED_PIN 12U   /*SPIHD*/
+#define GREEN_LED_PIN 13U /*SPIWP*/
+#define ONEWIRE_PIN 16U   /*SPID*/
+#define PUMP_PIN 17U      /*SPIQ*/
+#define USB_N_PIN 18U     /*GPIO18*/
+#define USB_P_PIN 19U     /*GPIO19*/
 
 static void initWifiCreditian(const char *, char *);
 static void changeWifiCreditian(char *);
@@ -25,38 +42,42 @@ static void checkWifiCreditian();
 static void rebootMCU();
 static void deepSleepMCU();
 static void temperatureMCU();
-static void ARDUINO_ISR_ATTR onHighClkPinInterrupt();
+static void ARDUINO_ISR_ATTR risingClkPinInterrupt();
 static void ARDUINO_ISR_ATTR timer0Interrupt();
 
 const unsigned creditianLength = 32U;
 const unsigned outputLogLength = 128U;
 const unsigned port = 80U;
-const unsigned gates = 3U;
-const unsigned bitsInPackage = 6U;
 const unsigned timerDivider = 80U;
+const unsigned timerFirstStep = 1000U;
 const unsigned timerStep = 47000U / 12U;
-const unsigned wires = (unsigned)AdcSelf::sizeof_ADC * gates;
-unsigned short wireData[bitsInPackage][wires] = {0U};
+const unsigned activeTimers = 1U;
+const char *filename = "settings";
+const char *ssidKey = "ssid";
+const char *passKey = "pass";
+const char *addrKey = "addr";
+static hw_timer_t *timer0 = NULL;
+static unsigned long oldTimeStamp = 0;
 static char ssid[creditianLength] = {0};
 static char pass[creditianLength] = {0};
 static char addr[creditianLength] = {0};
 static char outputLog[outputLogLength] = {0};
 static String BLEName("BLE-MAC::" + WiFi.macAddress());
-const char *filename = "settings";
-const char *ssidKey = "ssid";
-const char *passKey = "pass";
-const char *addrKey = "addr";
-const unsigned activeTimers = 1U;
-static hw_timer_t *timer0 = NULL;
-static bool setupReady = false;
 
-struct Led {
+static struct flag_s {
+    bool ble : 1;
+    bool wifi : 1;
+    bool delay : 1;
+    bool timer : 1;
+    bool ready : 1;
+} Flag = {false};
+
+static struct led_s {
     const uint8_t red;
     const uint8_t green;
-    const uint8_t blue;
     const uint8_t number;
     const uint8_t duty;
-} Led = {.red = 10U, .green = 11U, .blue = 12U, .number = 3U, .duty = 30U};
+} Led = {.red = RED_LED_PIN, .green = GREEN_LED_PIN, .number = 3U, .duty = 30U};
 
 class Ble : public BleParser, public BleHash {
   public:
@@ -71,6 +92,10 @@ WiFiCoder Coder;
 AdcSelf Adc;
 
 Preferences Storage;
+
+LcdParser Lcd;
+
+DS18B20 Temperature(ONEWIRE_PIN);
 
 #define printlog(...)                                                          \
     {                                                                          \
@@ -241,42 +266,76 @@ static void temperatureMCU() {
     printlog("MCU temperature: %.1f C.", temperatureRead());
 }
 
-static void ARDUINO_ISR_ATTR onHighClkPinInterrupt() {
-    if (setupReady) {
+static void ARDUINO_ISR_ATTR fallingPumpPinInterrupt() {
+    attachInterrupt(digitalPinToInterrupt(CLK_PIN), &risingClkPinInterrupt,
+                    RISING); /*To activate it only after pump shuts down*/
+    detachInterrupt(digitalPinToInterrupt(PUMP_PIN));
+}
+
+static void ARDUINO_ISR_ATTR risingClkPinInterrupt() {
+    static unsigned short suppressClock = 8U;
+    oldTimeStamp = micros();
+    if (Flag.ready && !suppressClock--) {
         detachInterrupt(digitalPinToInterrupt(CLK_PIN));
-
         timerStart(timer0);
-
-        printlog("Clock signal caught.");
     }
-    /* */
 }
 
 static void ARDUINO_ISR_ATTR timer0Interrupt() {
     static unsigned char currentBit = 0;
 #if (DEBUG == 1)
-    static unsigned long oldStamp = 0;
+    digitalWrite(DEBUG_PIN, !digitalRead(DEBUG_PIN));
     unsigned long timeStamp = micros();
-    printlog("%s: %u us.", (!oldStamp) ? "timer started at" : "timer duration",
-             timeStamp - oldStamp);
-    oldStamp = timeStamp;
+    const unsigned timeStampsCounts =
+        BITS_IN_PACKAGE + 2; /*For output and first entry*/
+    static unsigned timeStampCounter = 0U;
+    static unsigned long timeStamps[timeStampsCounts] = {0U};
+    timeStamps[timeStampCounter++] = timeStamp - oldTimeStamp;
+    oldTimeStamp = timeStamp;
 #endif // DEBUG
 
-    if (currentBit < bitsInPackage) {
-        for (unsigned gate = 0; gate < gates; gate++) {
-            digitalWrite(GATE_CHANNEL_0 + gate, true);
-            for (unsigned pin = 0; pin < AdcSelf::sizeof_ADC; pin++) {
-                wireData[currentBit][gate * (unsigned)AdcSelf::sizeof_ADC +
-                                     pin] = Adc.read((AdcSelf::channel_t)pin);
+    if (!Flag.delay) {
+        timerWrite(timer0, 0U);
+        timerAlarmWrite(timer0, timerStep, true);
+        Flag.delay = true;
+    } else if (currentBit < BITS_IN_PACKAGE && Flag.delay) {
+        for (unsigned gate = 0; gate < GATES_IN_LCD; gate++) {
+            digitalWrite(GATE_0_PIN + gate, true);
+            for (unsigned pin = 0; pin < sizeof_ADC; pin++) {
+                uint16_t wireData = Adc.read(pin);
+                switch (wireData) {
+                case (uint16_t)(4096.0f * 0.70f)...(uint16_t)(4096.0f * 1.00f):
+                    Lcd.wiresData[gate * sizeof_ADC + pin][currentBit] =
+                        LCD_HIGH;
+                    break;
+                case (uint16_t)(4096.0f * 0.00f)...(uint16_t)(4096.0f * 0.30f):
+                    Lcd.wiresData[gate * sizeof_ADC + pin][currentBit] =
+                        LCD_MIDDLE;
+                    break;
+                default:
+                    Lcd.wiresData[gate * sizeof_ADC + pin][currentBit] =
+                        LCD_LOW;
+                    break;
+                }
             }
-            digitalWrite(GATE_CHANNEL_0 + gate, false);
+            digitalWrite(GATE_0_PIN + gate, false);
         }
         currentBit++;
     } else {
         timerStop(timer0);
         currentBit = 0;
-        oldStamp = 0;
+        Flag.timer = true;
+#if (DEBUG == 1)
+        oldTimeStamp = 0;
         printlog("Data copied to buffer.");
+        printlog("Time stamps:");
+        for (timeStampCounter = 0; timeStampCounter < timeStampsCounts;
+             timeStampCounter++) {
+            printlog("%u: %u us%c", timeStampCounter,
+                     timeStamps[timeStampCounter],
+                     (timeStampCounter < timeStampsCounts - 1) ? ';' : '.');
+        }
+#endif // DEBUG
     }
 }
 
@@ -293,8 +352,7 @@ void setup() {
     Ble.initBleHash();
 
     if (!ledcSetup(RED_LED_CHANNEL, 500, 8) ||
-        !ledcSetup(GREEN_LED_CHANNEL, 500, 8) ||
-        !ledcSetup(BLUE_LED_CHANNEL, 500, 8)) {
+        !ledcSetup(GREEN_LED_CHANNEL, 500, 8)) {
         printlog("LED is not initialized correctly at %u ms.",
                  millis() - timeStamp);
         errorOccured = true;
@@ -302,30 +360,36 @@ void setup() {
 
     ledcAttachPin(Led.red, RED_LED_CHANNEL);
     ledcAttachPin(Led.green, GREEN_LED_CHANNEL);
-    ledcAttachPin(Led.blue, BLUE_LED_CHANNEL);
     printlog("LED attached to their channels at %u ms.", millis() - timeStamp);
 
     timer0 = timerBegin(0, timerDivider, true);
     timerStop(timer0);
     timerAttachInterrupt(timer0, &timer0Interrupt, true);
-    timerAlarmWrite(timer0, timerStep, true);
+    timerAlarmWrite(timer0, timerFirstStep, false);
     timerAlarmEnable(timer0);
     timerWrite(timer0, 0U);
     printlog("Timer0 initiated at %u ms.", millis() - timeStamp);
 
-    for (unsigned pin = 0; pin < AdcSelf::sizeof_ADC; pin++) {
-        if (!Adc.attachPin((AdcSelf::channel_t)pin)) {
+    for (unsigned pin = 0; pin < sizeof_ADC; pin++) {
+        if (!Adc.attachPin(pin)) {
             printlog("The ADC did not work properly!");
             errorOccured = true;
         }
     }
-    for (unsigned gate = 0; gate < gates; gate++) {
-        pinMode(GATE_CHANNEL_0 + gate, OUTPUT); /*Communicator gates*/
-        digitalWrite(GATE_CHANNEL_0 + gate, false);
+    for (unsigned gate = 0; gate < GATES_IN_LCD; gate++) {
+        pinMode(GATE_0_PIN + gate, OUTPUT); /*Communicator gates*/
+        digitalWrite(GATE_0_PIN + gate, false);
     }
     pinMode(CLK_PIN, OPEN_DRAIN);
-    attachInterrupt(digitalPinToInterrupt(CLK_PIN), &onHighClkPinInterrupt,
-                    RISING);
+    digitalWrite(CLK_PIN, false); /*To charge capacitor ASAP*/
+#if (DEBUG == 1)
+    pinMode(DEBUG_PIN, OUTPUT);
+    digitalWrite(DEBUG_PIN, true);
+#endif // DEBUG
+    pinMode(PUMP_PIN, OPEN_DRAIN);
+    attachInterrupt(digitalPinToInterrupt(OPEN_DRAIN), &fallingPumpPinInterrupt,
+                    FALLING);
+
     printlog("Digital pins initiated at %u ms.", millis() - timeStamp);
 
 #if (DEBUG == 1)
@@ -334,7 +398,6 @@ void setup() {
     ledcWrite(RED_LED_CHANNEL, 0U);
 #endif // DEBUG
     ledcWrite(GREEN_LED_CHANNEL, 0U);
-    ledcWrite(BLUE_LED_CHANNEL, 0U);
 
     if (!Storage.begin(filename)) {
         printlog("Storage error at %u ms.", millis() - timeStamp);
@@ -352,15 +415,11 @@ void setup() {
     printlog("Initialization completed %s in %u ms.",
              errorOccured ? "with errors" : "successfully",
              millis() - timeStamp);
-    setupReady = true;
+    Flag.ready = true;
 }
 
 void loop() {
     static bool state = true;
-    static struct Flag {
-        bool ble : 1;
-        bool wifi : 1;
-    } Flag = {0};
     static uint8_t duty = Led.duty;
 
     if (Ble.connected()) {
@@ -398,6 +457,19 @@ void loop() {
             Client.print(WiFi.macAddress() +
                          "::" + Coder.codeStringWithAppend(greetings));
         }
+        if (Flag.timer) {
+#define LCD_DATA                                                               \
+    "SYS:%s::DIA:%s::PUL:%s::TMP:%02.1f", Lcd.Data.SYS, Lcd.Data.DIA,          \
+        Lcd.Data.PUL, Temperature.getTempC()
+            Lcd.parseLcd();
+            unsigned length = snprintf(NULL, 0, LCD_DATA) + 1U;
+            char *lcdData = new char[length];
+            snprintf(lcdData, length, LCD_DATA);
+            Client.print(lcdData);
+            printlog(lcdData);
+            Flag.timer = false;
+            delete[] lcdData;
+        }
         if (Client.available()) {
             String answer = Client.readString();
             printlog("Data received: ", answer.c_str());
@@ -426,5 +498,5 @@ void loop() {
     }
     ledcWrite(RED_LED_CHANNEL, duty);
 #endif // DEBUG
-    delay(1);
+    delay(10);
 }

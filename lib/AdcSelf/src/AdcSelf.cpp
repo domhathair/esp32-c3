@@ -10,7 +10,7 @@ void AdcSelf::init() {
     }
 }
 
-bool AdcSelf::attachPin(channel_t pin, attenuation_t attenuation) {
+bool AdcSelf::attachPin(uint8_t pin, uint8_t attenuation) {
     int8_t channel = digitalPinToAnalogChannel(pin);
     if (channel < 0) {
         log_e(">> Pin %u is not ADC pin!", (uint8_t)pin);
@@ -21,7 +21,7 @@ bool AdcSelf::attachPin(channel_t pin, attenuation_t attenuation) {
     return true;
 }
 
-uint16_t AdcSelf::read(channel_t pin) {
+uint16_t AdcSelf::read(uint8_t pin) {
     int8_t channel = digitalPinToAnalogChannel(pin);
     int value = 0;
     esp_err_t error = ESP_OK;
@@ -48,7 +48,7 @@ uint16_t AdcSelf::read(channel_t pin) {
     return value;
 }
 
-uint32_t AdcSelf::readMilliVolts(channel_t pin) {
+uint32_t AdcSelf::readMilliVolts(uint8_t pin) {
     int8_t channel = digitalPinToAnalogChannel(pin);
     if (channel < 0) {
         log_e(">> Pin %u is not ADC pin!", pin);
@@ -97,7 +97,7 @@ uint32_t AdcSelf::readMilliVolts(channel_t pin) {
     return esp_adc_cal_raw_to_voltage((uint32_t)adc_reading, &chars);
 }
 
-void AdcSelf::setPinAttenuation(channel_t pin, attenuation_t attenuation) {
+void AdcSelf::setPinAttenuation(uint8_t pin, uint8_t attenuation) {
     int8_t channel = digitalPinToAnalogChannel(pin);
     if (channel < 0) {
         return;
