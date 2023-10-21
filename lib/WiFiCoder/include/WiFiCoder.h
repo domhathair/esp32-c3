@@ -5,8 +5,10 @@
 
 class WiFiCoder {
   public:
+    uint32_t codeString(const char *);
     uint32_t codeString(String &);
-    String codeStringWithAppend(String &);
+    String codeStringWithAppend(const char *, String delimiter = "::");
+    String codeStringWithAppend(String &, String delimiter = "::");
 
   private:
     void operator=(WiFiCoder const &other) = delete;

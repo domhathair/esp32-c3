@@ -28,10 +28,10 @@
 #define CLK_PIN 10U       /*GPIO10*/
 #define RED_LED_PIN 12U   /*SPIHD*/
 #define GREEN_LED_PIN 13U /*SPIWP*/
-#define ONEWIRE_PIN 16U   /*SPID*/
-#define PUMP_PIN 17U      /*SPIQ*/
 #define USB_N_PIN 18U     /*GPIO18*/
 #define USB_P_PIN 19U     /*GPIO19*/
+#define PUMP_PIN 20U      /*U0RX*/
+#define ONEWIRE_PIN 21U   /*U0TX*/
 
 static void initWifiCreditian(const char *, char *);
 static void changeWifiCreditian(char *);
@@ -42,6 +42,7 @@ static void checkWifiCreditian();
 static void rebootMCU();
 static void deepSleepMCU();
 static void temperatureMCU();
+static void ARDUINO_ISR_ATTR risingPumpPinInterrupt();
 static void ARDUINO_ISR_ATTR risingClkPinInterrupt();
 static void ARDUINO_ISR_ATTR timer0Interrupt();
 
@@ -63,7 +64,6 @@ static char pass[creditianLength] = {0};
 static char addr[creditianLength] = {0};
 static char outputLog[outputLogLength] = {0};
 static String BLEName("BLE-MAC::" + WiFi.macAddress());
-
 static struct flag_s {
     bool ble : 1;
     bool wifi : 1;
@@ -71,31 +71,23 @@ static struct flag_s {
     bool timer : 1;
     bool ready : 1;
 } Flag = {false};
-
 static struct led_s {
     const uint8_t red;
     const uint8_t green;
     const uint8_t number;
     const uint8_t duty;
 } Led = {.red = RED_LED_PIN, .green = GREEN_LED_PIN, .number = 3U, .duty = 30U};
-
-class Ble : public BleParser, public BleHash {
+static class Ble : public BleParser, public BleHash {
   public:
     void onWrite(BLECharacteristic *pCharacteristic) override;
     void initBleHash() override;
 } Ble;
-
-WiFiClient Client;
-
-WiFiCoder Coder;
-
-AdcSelf Adc;
-
-Preferences Storage;
-
-LcdParser Lcd;
-
-DS18B20 Temperature(ONEWIRE_PIN);
+static WiFiClient Client;
+static WiFiCoder Coder;
+static AdcSelf Adc;
+static Preferences Storage;
+static LcdParser Lcd;
+static DS18B20 Temperature(ONEWIRE_PIN);
 
 #define printlog(...)                                                          \
     {                                                                          \
@@ -206,10 +198,11 @@ static void connectToWiFi(char *ssid, char *pass) {
     bool errorOccured = false;
     unsigned times = 0U;
     const unsigned timesMax = 64U;
+    const unsigned delayValue = 32U;
 
     WiFi.begin(ssid, pass);
     while ((status = WiFi.status()) != WL_CONNECTED && times++ < timesMax)
-        delay(0x10U);
+        delay(delayValue);
 
     if (times < timesMax) {
         printlog("Connecting to server...");
@@ -266,7 +259,7 @@ static void temperatureMCU() {
     printlog("MCU temperature: %.1f C.", temperatureRead());
 }
 
-static void ARDUINO_ISR_ATTR fallingPumpPinInterrupt() {
+static void ARDUINO_ISR_ATTR risingPumpPinInterrupt() {
     attachInterrupt(digitalPinToInterrupt(CLK_PIN), &risingClkPinInterrupt,
                     RISING); /*To activate it only after pump shuts down*/
     detachInterrupt(digitalPinToInterrupt(PUMP_PIN));
@@ -324,6 +317,7 @@ static void ARDUINO_ISR_ATTR timer0Interrupt() {
     } else {
         timerStop(timer0);
         currentBit = 0;
+        Lcd.parseLcd();
         Flag.timer = true;
 #if (DEBUG == 1)
         oldTimeStamp = 0;
@@ -338,6 +332,8 @@ static void ARDUINO_ISR_ATTR timer0Interrupt() {
 #endif // DEBUG
     }
 }
+
+/***************************************************************************/
 
 void setup() {
     unsigned long timeStamp = millis();
@@ -386,9 +382,9 @@ void setup() {
     pinMode(DEBUG_PIN, OUTPUT);
     digitalWrite(DEBUG_PIN, true);
 #endif // DEBUG
-    pinMode(PUMP_PIN, OPEN_DRAIN);
-    attachInterrupt(digitalPinToInterrupt(OPEN_DRAIN), &fallingPumpPinInterrupt,
-                    FALLING);
+    pinMode(PUMP_PIN, INPUT);
+    attachInterrupt(digitalPinToInterrupt(PUMP_PIN), &risingPumpPinInterrupt,
+                    RISING);
 
     printlog("Digital pins initiated at %u ms.", millis() - timeStamp);
 
@@ -461,11 +457,11 @@ void loop() {
 #define LCD_DATA                                                               \
     "SYS:%s::DIA:%s::PUL:%s::TMP:%02.1f", Lcd.Data.SYS, Lcd.Data.DIA,          \
         Lcd.Data.PUL, Temperature.getTempC()
-            Lcd.parseLcd();
             unsigned length = snprintf(NULL, 0, LCD_DATA) + 1U;
             char *lcdData = new char[length];
             snprintf(lcdData, length, LCD_DATA);
-            Client.print(lcdData);
+            Client.print(WiFi.macAddress() +
+                         "::" + Coder.codeStringWithAppend(lcdData));
             printlog(lcdData);
             Flag.timer = false;
             delete[] lcdData;

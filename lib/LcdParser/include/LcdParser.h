@@ -16,7 +16,7 @@ class LcdParser {
     LcdParser();
 
     char wiresData[WIRES_IN_LCD][BITS_IN_PACKAGE] = {0};
-    char digits[DIGITS_IN_LCD] = {0};
+    char symbols[DIGITS_IN_LCD] = {0};
 
     struct data_s {
         char SYS[4U];
@@ -29,8 +29,14 @@ class LcdParser {
   private:
     void operator=(LcdParser const &other) = delete;
 
-    const char printableDigits[10U] = {0x3F, 0x06, 0x5B, 0x4F, 0x66,
-                                       0x6D, 0x7D, 0x07, 0x7F, 0x6F};
+    const char printableSymbols[30U] = {
+        0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x6F,
+        0x77, 0x7C, 0x39, 0x79, 0x71, 0x76, 0x1E, 0x38, 0x37, 0x73,
+        0x3E, 0x6E, 0x58, 0x3D, 0x74, 0x54, 0x5C, 0x67, 0x50, 0x1C};
+    const char alphabet[30U] = {'0', '1', '2', '3', '4', '5', '6', '7',
+                                '8', '9', 'A', 'B', 'C', 'E', 'F', 'H',
+                                'J', 'L', 'N', 'P', 'U', 'Y', 'c', 'g',
+                                'h', 'n', 'o', 'q', 'r', 'u'};
 
     const char wiresShift[DIGITS_IN_LCD][WIRES_IN_LCD][BITS_IN_PACKAGE] = {
         {{0x04, 0x06, 0x00, 0xFF, 0xFF, 0xFF}, /*0*/

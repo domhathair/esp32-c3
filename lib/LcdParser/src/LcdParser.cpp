@@ -3,24 +3,23 @@
 LcdParser::LcdParser() {}
 
 void LcdParser::parseLcd() {
-    for (unsigned digit = 0; digit < DIGITS_IN_LCD; digit++) {
+    for (unsigned counter = 0; counter < DIGITS_IN_LCD; counter++) {
+        char symbol = ' ';
         bool flag = false;
         for (unsigned wire = 0; wire < WIRES_IN_LCD; wire++)
             for (unsigned bit = 0; bit < BITS_IN_PACKAGE; bit++)
-                if (wiresShift[digit][wire][bit] != 0xFF)
-                    digits[digit] |= (wiresData[wire][bit] == LCD_HIGH)
-                                     << wiresShift[digit][wire][bit];
-        for (unsigned digitPrint = 0; digitPrint < sizeof(printableDigits);
-             digitPrint++)
-            if (digits[digit] == printableDigits[digitPrint]) {
-                digits[digit] = digitPrint + '0';
-                flag = true;
+                if (wiresShift[counter][wire][bit] != 0xFF)
+                    symbols[counter] |= (wiresData[wire][bit] == LCD_HIGH)
+                                        << wiresShift[counter][wire][bit];
+        for (unsigned symbolPrint = 0; symbolPrint < sizeof(printableSymbols);
+             symbolPrint++)
+            if (symbols[counter] == printableSymbols[symbolPrint]) {
+                symbol = alphabet[symbolPrint];
                 break;
             }
-        if (!flag)
-            digits[digit] = 'X';
+        symbols[counter] = symbol;
     }
-    snprintf(Data.SYS, 4U, "%c%c%c", digits[0U], digits[1U], digits[2U]);
-    snprintf(Data.DIA, 4U, "%c%c%c", digits[3U], digits[4U], digits[5U]);
-    snprintf(Data.PUL, 4U, "%c%c%c", digits[6U], digits[7U], digits[8U]);
+    snprintf(Data.SYS, 4U, "%c%c%c", symbols[0U], symbols[1U], symbols[2U]);
+    snprintf(Data.DIA, 4U, "%c%c%c", symbols[3U], symbols[4U], symbols[5U]);
+    snprintf(Data.PUL, 4U, "%c%c%c", symbols[6U], symbols[7U], symbols[8U]);
 }
