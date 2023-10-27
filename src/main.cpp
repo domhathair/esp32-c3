@@ -1,3 +1,4 @@
+#include "defines.h"
 #include <AdcSelf.h>
 #include <Arduino.h>
 #include <BleHash.h>
@@ -9,29 +10,8 @@
 #include <WiFi.h>
 #include <WiFiClient.h>
 #include <WiFiCoder.h>
-
-#define RED_LED_CHANNEL 0U
-#define GREEN_LED_CHANNEL 1U
-
-#define ADC1_CH0_PIN ADC1_CH0 /*GPIO0*/
-#define ADC1_CH1_PIN ADC1_CH1 /*GPIO1*/
-#define ADC1_CH2_PIN ADC1_CH2 /*GPIO2*/
-#define ADC1_CH3_PIN ADC1_CH3 /*GPIO3*/
-#define ADC1_CH4_PIN ADC1_CH4 /*GPIO4*/
-#define ADC2_CH0_PIN ADC2_CH0 /*GPIO5*/
-#define GATE_0_PIN 6U         /*GPIO6*/
-#define GATE_1_PIN 7U         /*GPIO7*/
-#define GATE_2_PIN 8U         /*GPIO8*/
-#if (DEBUG == 1)
-#define DEBUG_PIN 9U      /*GPIO9*/
-#endif                    // DEBUG
-#define CLK_PIN 10U       /*GPIO10*/
-#define RED_LED_PIN 12U   /*SPIHD*/
-#define GREEN_LED_PIN 13U /*SPIWP*/
-#define USB_N_PIN 18U     /*GPIO18*/
-#define USB_P_PIN 19U     /*GPIO19*/
-#define PUMP_PIN 20U      /*U0RX*/
-#define ONEWIRE_PIN 21U   /*U0TX*/
+#include <esp32-hal-adc.h>
+#include <sleep_modes.h>
 
 static void initWifiCreditian(const char *, char *);
 static void changeWifiCreditian(char *);
@@ -39,9 +19,12 @@ static void saveWifiCreditian(const char *, char *);
 static void connectToWiFi(char *, char *);
 static void disconnectFromWiFi(bool);
 static void checkWifiCreditian();
-static void rebootMCU();
-static void deepSleepMCU();
 static void temperatureMCU();
+static inline void resetAdcPins();
+static void shutDownPeripheral(bool);
+static void RTC_IRAM_ATTR wakeStub();
+static void sleepMCU();
+static void rebootMCU();
 static void ARDUINO_ISR_ATTR risingPumpPinInterrupt();
 static void ARDUINO_ISR_ATTR risingClkPinInterrupt();
 static void ARDUINO_ISR_ATTR timer0Interrupt();
@@ -57,8 +40,10 @@ const char *filename = "settings";
 const char *ssidKey = "ssid";
 const char *passKey = "pass";
 const char *addrKey = "addr";
+const unsigned valueToSleep = 6000U;
+static unsigned loopsToSleep = 0U;
 static hw_timer_t *timer0 = NULL;
-static unsigned long oldTimeStamp = 0;
+static unsigned long oldTimeStamp = 0U;
 static char ssid[creditianLength] = {0};
 static char pass[creditianLength] = {0};
 static char addr[creditianLength] = {0};
@@ -70,6 +55,7 @@ static struct flag_s {
     bool delay : 1;
     bool timer : 1;
     bool ready : 1;
+    bool look : 1;
 } Flag = {false};
 static struct led_s {
     const uint8_t red;
@@ -105,7 +91,7 @@ void Ble::onWrite(BLECharacteristic *pCharacteristic) {
     } Flag = {.CR = false, .PR = false};
     if (pCharacteristic->getUUID().toString() == BLE_RX_UUID) {
         String value(pCharacteristic->getValue().data());
-        for (unsigned counter = 0; counter < value.length(); counter++) {
+        for (unsigned counter = 0U; counter < value.length(); counter++) {
             if (Flag.PR)
                 receiveBuffer.add(value[counter]);
             switch (value[counter]) {
@@ -146,9 +132,9 @@ void Ble::initBleHash() {
     commandList[hash("connect")] = []() { connectToWiFi(ssid, pass); };
     commandList[hash("disconnect")] = []() { disconnectFromWiFi(true); };
     commandList[hash("check")] = []() { checkWifiCreditian(); };
-    commandList[hash("reboot")] = []() { rebootMCU(); };
-    commandList[hash("sleep")] = []() { deepSleepMCU(); };
     commandList[hash("temperature")] = []() { temperatureMCU(); };
+    commandList[hash("sleep")] = []() { sleepMCU(); };
+    commandList[hash("reboot")] = []() { rebootMCU(); };
 }
 
 static void initWifiCreditian(const char *key, char *creditian) {
@@ -241,22 +227,54 @@ static void checkWifiCreditian() {
              addr);
 }
 
-static void rebootMCU() {
-    printlog("The device will now reboot!");
-    disconnectFromWiFi(false);
-    delay(1000);
-    esp_restart();
-}
-
-static void deepSleepMCU() {
-    printlog("The device goes to sleep.");
-    disconnectFromWiFi(false);
-    delay(1000);
-    esp_deep_sleep_start();
-}
-
 static void temperatureMCU() {
     printlog("MCU temperature: %.1f C.", temperatureRead());
+}
+
+static inline void resetAdcPins() {
+    gpio_deep_sleep_wakeup_disable(static_cast<gpio_num_t>(WAKEUP_PIN));
+    gpio_force_unhold_all();
+    for (unsigned pin = 0; pin < sizeof_ADC; pin++) {
+        gpio_config_t pinConfig = {.pin_bit_mask = 0x1UL << pin,
+                                   .mode = GPIO_MODE_DISABLE,
+                                   .pull_up_en = GPIO_PULLUP_DISABLE,
+                                   .pull_down_en = GPIO_PULLDOWN_DISABLE,
+                                   .intr_type = GPIO_INTR_DISABLE};
+        ESP_ERROR_CHECK(gpio_config(&pinConfig));
+    }
+}
+
+static void shutDownPeripheral(bool resetAdc) {
+    if (resetAdc)
+        resetAdcPins();
+    disconnectFromWiFi(false);
+    BLEDevice::deinit(true);
+}
+
+static void RTC_IRAM_ATTR wakeStub() {
+    Sleep::esp_default_wake_deep_sleep();
+    resetAdcPins();
+}
+
+static void sleepMCU() {
+    const uint64_t WAKEUP_HIGH_PIN_BITMASK = 1 << WAKEUP_PIN;
+    printlog("The device goes to sleep.");
+    digitalWrite(GATE_2_PIN, true);
+    pinMode(WAKEUP_PIN, INPUT);
+    gpio_deep_sleep_hold_en();
+    Sleep::esp_deep_sleep_enable_gpio_wakeup(WAKEUP_HIGH_PIN_BITMASK,
+                                             ESP_GPIO_WAKEUP_GPIO_HIGH);
+    Sleep::esp_set_deep_sleep_wake_stub(&wakeStub);
+    shutDownPeripheral(false);
+    delay(100U);
+    Sleep::esp_deep_sleep_start();
+}
+
+static void rebootMCU() {
+    printlog("The device will now reboot!");
+    shutDownPeripheral(true);
+    delay(100U);
+    esp_restart();
 }
 
 static void ARDUINO_ISR_ATTR risingPumpPinInterrupt() {
@@ -275,7 +293,7 @@ static void ARDUINO_ISR_ATTR risingClkPinInterrupt() {
 }
 
 static void ARDUINO_ISR_ATTR timer0Interrupt() {
-    static unsigned char currentBit = 0;
+    static unsigned char currentBit = 0U;
 #if (DEBUG == 1)
     digitalWrite(DEBUG_PIN, !digitalRead(DEBUG_PIN));
     unsigned long timeStamp = micros();
@@ -292,9 +310,10 @@ static void ARDUINO_ISR_ATTR timer0Interrupt() {
         timerAlarmWrite(timer0, timerStep, true);
         Flag.delay = true;
     } else if (currentBit < BITS_IN_PACKAGE && Flag.delay) {
-        for (unsigned gate = 0; gate < GATES_IN_LCD; gate++) {
+        for (unsigned gate = 0U; gate < GATES_IN_LCD; gate++) {
             digitalWrite(GATE_0_PIN + gate, true);
-            for (unsigned pin = 0; pin < sizeof_ADC; pin++) {
+            delayMicroseconds(10U);
+            for (unsigned pin = 0U; pin < sizeof_ADC; pin++) {
                 uint16_t wireData = Adc.read(pin);
                 switch (wireData) {
                 case (uint16_t)(4096.0f * 0.70f)...(uint16_t)(4096.0f * 1.00f):
@@ -316,14 +335,13 @@ static void ARDUINO_ISR_ATTR timer0Interrupt() {
         currentBit++;
     } else {
         timerStop(timer0);
-        currentBit = 0;
-        Lcd.parseLcd();
+        currentBit = 0U;
         Flag.timer = true;
 #if (DEBUG == 1)
-        oldTimeStamp = 0;
+        oldTimeStamp = 0U;
         printlog("Data copied to buffer.");
         printlog("Time stamps:");
-        for (timeStampCounter = 0; timeStampCounter < timeStampsCounts;
+        for (timeStampCounter = 0U; timeStampCounter < timeStampsCounts;
              timeStampCounter++) {
             printlog("%u: %u us%c", timeStampCounter,
                      timeStamps[timeStampCounter],
@@ -358,7 +376,7 @@ void setup() {
     ledcAttachPin(Led.green, GREEN_LED_CHANNEL);
     printlog("LED attached to their channels at %u ms.", millis() - timeStamp);
 
-    timer0 = timerBegin(0, timerDivider, true);
+    timer0 = timerBegin(0U, timerDivider, true);
     timerStop(timer0);
     timerAttachInterrupt(timer0, &timer0Interrupt, true);
     timerAlarmWrite(timer0, timerFirstStep, false);
@@ -366,13 +384,13 @@ void setup() {
     timerWrite(timer0, 0U);
     printlog("Timer0 initiated at %u ms.", millis() - timeStamp);
 
-    for (unsigned pin = 0; pin < sizeof_ADC; pin++) {
+    for (unsigned pin = 0U; pin < sizeof_ADC; pin++) {
         if (!Adc.attachPin(pin)) {
             printlog("The ADC did not work properly!");
             errorOccured = true;
         }
     }
-    for (unsigned gate = 0; gate < GATES_IN_LCD; gate++) {
+    for (unsigned gate = 0U; gate < GATES_IN_LCD; gate++) {
         pinMode(GATE_0_PIN + gate, OUTPUT); /*Communicator gates*/
         digitalWrite(GATE_0_PIN + gate, false);
     }
@@ -385,6 +403,7 @@ void setup() {
     pinMode(PUMP_PIN, INPUT);
     attachInterrupt(digitalPinToInterrupt(PUMP_PIN), &risingPumpPinInterrupt,
                     RISING);
+    Flag.look = digitalRead(PUMP_PIN);
 
     printlog("Digital pins initiated at %u ms.", millis() - timeStamp);
 
@@ -417,6 +436,15 @@ void setup() {
 void loop() {
     static bool state = true;
     static uint8_t duty = Led.duty;
+
+    if ((Flag.timer || Flag.look) && !Flag.ble) {
+        if (loopsToSleep++ == valueToSleep) {
+            sleepMCU();
+        }
+        if (!digitalRead(PUMP_PIN)) {
+            rebootMCU();
+        }
+    }
 
     if (Ble.connected()) {
         if (!Flag.ble) {
@@ -454,10 +482,24 @@ void loop() {
                          "::" + Coder.codeStringWithAppend(greetings));
         }
         if (Flag.timer) {
+            float temperature;
+#if (DEMO == 1)
+            temperature = (float)random(35L, 37L) + ((float)random(9L) / 10.0f);
+            snprintf(Lcd.Data.SYS, sizeof(Lcd.Data.SYS) * sizeof(char), "%ld",
+                     random(90L, 150L));
+            snprintf(Lcd.Data.DIA, sizeof(Lcd.Data.DIA) * sizeof(char), "%ld",
+                     random(60L, 100L));
+            snprintf(Lcd.Data.PUL, sizeof(Lcd.Data.PUL) * sizeof(char), "%ld",
+                     random(50L, 90L));
+#else
+            temperature = Temperature.getTempC();
+            Lcd.parseLcd();
+#endif // DEMO
+
 #define LCD_DATA                                                               \
     "SYS:%s::DIA:%s::PUL:%s::TMP:%02.1f", Lcd.Data.SYS, Lcd.Data.DIA,          \
-        Lcd.Data.PUL, Temperature.getTempC()
-            unsigned length = snprintf(NULL, 0, LCD_DATA) + 1U;
+        Lcd.Data.PUL, temperature
+            unsigned length = snprintf(NULL, 0U, LCD_DATA) + 1U;
             char *lcdData = new char[length];
             snprintf(lcdData, length, LCD_DATA);
             Client.print(WiFi.macAddress() +
@@ -465,6 +507,7 @@ void loop() {
             printlog(lcdData);
             Flag.timer = false;
             delete[] lcdData;
+            sleepMCU();
         }
         if (Client.available()) {
             String answer = Client.readString();
