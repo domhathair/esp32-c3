@@ -12,7 +12,7 @@ class BleParser : public BleSerial {
     unsigned argc;
     char **argv;
     unsigned
-    parseString(String &,
+    parseString(const char *,
                 const char * = " ,.;:!?-\"()[]{}<>@#$%^&*_+=~`|\\/\n\r");
 
     bool isParsed();

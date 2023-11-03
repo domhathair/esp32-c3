@@ -4,7 +4,7 @@ LcdParser::LcdParser() {}
 
 void LcdParser::parseLcd() {
     for (unsigned counter = 0; counter < DIGITS_IN_LCD; counter++) {
-        char symbol = ' ';
+        char symbol = '0';
         bool flag = false;
         for (unsigned wire = 0; wire < WIRES_IN_LCD; wire++)
             for (unsigned bit = 0; bit < BITS_IN_PACKAGE; bit++)
@@ -19,7 +19,10 @@ void LcdParser::parseLcd() {
             }
         symbols[counter] = symbol;
     }
-    snprintf(Data.SYS, 4U, "%c%c%c", symbols[0U], symbols[1U], symbols[2U]);
-    snprintf(Data.DIA, 4U, "%c%c%c", symbols[3U], symbols[4U], symbols[5U]);
-    snprintf(Data.PUL, 4U, "%c%c%c", symbols[6U], symbols[7U], symbols[8U]);
+    snprintf(Data.SYS, sizeof(Data.SYS) * sizeof(char), "%c%c%c", symbols[0U],
+             symbols[1U], symbols[2U]);
+    snprintf(Data.DIA, sizeof(Data.DIA) * sizeof(char), "%c%c%c", symbols[3U],
+             symbols[4U], symbols[5U]);
+    snprintf(Data.PUL, sizeof(Data.PUL) * sizeof(char), "%c%c%c", symbols[6U],
+             symbols[7U], symbols[8U]);
 }

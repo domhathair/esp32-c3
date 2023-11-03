@@ -11,14 +11,16 @@
 #include <WiFiClient.h>
 #include <WiFiCoder.h>
 #include <esp32-hal-adc.h>
+#include <lwip/sockets.h>
 #include <sleep_modes.h>
 
-static void initWifiCreditian(const char *, char *);
-static void changeWifiCreditian(char *);
-static void saveWifiCreditian(const char *, char *);
+static void helpMessage();
+static void initCreditian(const char *, char *);
+static void changeCreditian(char *);
+static void saveCreditian(const char *, char *);
 static void connectToWiFi(char *, char *);
 static void disconnectFromWiFi(bool);
-static void checkWifiCreditian();
+static void checkCreditians();
 static void temperatureMCU();
 static inline void resetAdcPins();
 static void shutDownPeripheral(bool);
@@ -29,17 +31,14 @@ static void ARDUINO_ISR_ATTR risingPumpPinInterrupt();
 static void ARDUINO_ISR_ATTR risingClkPinInterrupt();
 static void ARDUINO_ISR_ATTR timer0Interrupt();
 
-const unsigned creditianLength = 32U;
-const unsigned outputLogLength = 128U;
+const unsigned creditianLength = 48U;
+const unsigned bufferLength = 128U;
 const unsigned port = 80U;
 const unsigned timerDivider = 80U;
 const unsigned timerFirstStep = 1000U;
 const unsigned timerStep = 47000U / 12U;
-const unsigned activeTimers = 1U;
 const char *filename = "settings";
-const char *ssidKey = "ssid";
-const char *passKey = "pass";
-const char *addrKey = "addr";
+const char *basicCreditian = "dummy";
 const unsigned valueToSleep = 6000U;
 static unsigned loopsToSleep = 0U;
 static hw_timer_t *timer0 = NULL;
@@ -47,7 +46,9 @@ static unsigned long oldTimeStamp = 0U;
 static char ssid[creditianLength] = {0};
 static char pass[creditianLength] = {0};
 static char addr[creditianLength] = {0};
-static char outputLog[outputLogLength] = {0};
+static char name[creditianLength] = {0};
+static char lcdData[bufferLength] = {0};
+static char outputLog[bufferLength] = {0};
 static String BLEName("BLE-MAC::" + WiFi.macAddress());
 static struct flag_s {
     bool ble : 1;
@@ -77,7 +78,7 @@ static DS18B20 Temperature(ONEWIRE_PIN);
 
 #define printlog(...)                                                          \
     {                                                                          \
-        snprintf(outputLog, outputLogLength, __VA_ARGS__);                     \
+        snprintf(outputLog, bufferLength, __VA_ARGS__);                        \
         if (Ble.connected()) {                                                 \
             Ble.printf("%s\r\n", outputLog);                                   \
         }                                                                      \
@@ -90,8 +91,9 @@ void Ble::onWrite(BLECharacteristic *pCharacteristic) {
         bool PR : 1;
     } Flag = {.CR = false, .PR = false};
     if (pCharacteristic->getUUID().toString() == BLE_RX_UUID) {
-        String value(pCharacteristic->getValue().data());
-        for (unsigned counter = 0U; counter < value.length(); counter++) {
+        char *value = strdup(pCharacteristic->getValue().data());
+        unsigned valueLength = strlen(value);
+        for (unsigned counter = 0U; counter < valueLength; counter++) {
             if (Flag.PR)
                 receiveBuffer.add(value[counter]);
             switch (value[counter]) {
@@ -103,11 +105,16 @@ void Ble::onWrite(BLECharacteristic *pCharacteristic) {
                 break;
             case '\n':
                 if (Flag.PR && Flag.CR) {
-                    String string = readString();
+                    unsigned length = available() + 1U;
+                    char *string = new char[length];
+                    unsigned terminatorIndex =
+                        readBytesUntil('\n', string, length);
+                    string[terminatorIndex] = '\0';
                     parseString(string, " ,;:!?/%\n\r");
 #if (DEBUG == 1)
-                    log_e(">> Received: %s", string.c_str());
+                    log_e(">> Received: %s", string);
 #endif // DEBUG
+                    delete[] string;
                     Flag.PR = false;
                 }
                 [[fallthrough]];
@@ -116,67 +123,75 @@ void Ble::onWrite(BLECharacteristic *pCharacteristic) {
                 break;
             }
         }
+        delete[] value;
     }
 }
 
 void Ble::initBleHash() {
-    commandList[hash("ssid")] = []() { changeWifiCreditian(ssid); };
-    commandList[hash("pass")] = []() { changeWifiCreditian(pass); };
-    commandList[hash("addr")] = []() { changeWifiCreditian(addr); };
-    commandList[hash("save")] = []() {
-        log_e(">> Saved Wi-Fi creditians <key: creditian>:");
-        saveWifiCreditian(ssidKey, ssid);
-        saveWifiCreditian(passKey, pass);
-        saveWifiCreditian(addrKey, addr);
-    };
+    commandList[hash("help")] = []() { helpMessage(); };
+    commandList[hash("ssid")] = []() { changeCreditian(ssid); };
+    commandList[hash("pass")] = []() { changeCreditian(pass); };
+    commandList[hash("addr")] = []() { changeCreditian(addr); };
+    commandList[hash("name")] = []() { changeCreditian(name); };
     commandList[hash("connect")] = []() { connectToWiFi(ssid, pass); };
     commandList[hash("disconnect")] = []() { disconnectFromWiFi(true); };
-    commandList[hash("check")] = []() { checkWifiCreditian(); };
+    commandList[hash("check")] = []() { checkCreditians(); };
     commandList[hash("temperature")] = []() { temperatureMCU(); };
     commandList[hash("sleep")] = []() { sleepMCU(); };
     commandList[hash("reboot")] = []() { rebootMCU(); };
 }
 
-static void initWifiCreditian(const char *key, char *creditian) {
+static void helpMessage() {
+    printlog("List of available commands:");
+    printlog("#help        :: show this message;");
+    printlog("#ssid XXX    :: change Wi-Fi ssid to XXX;");
+    printlog("#pass XXX    :: change Wi-Fi password to XXX;");
+    printlog("#addr XXX    :: change server IP-address to XXX;");
+    printlog("#name XXX    :: change device name to XXX;");
+    printlog("#connect     :: connect to Wi-Fi;");
+    printlog("#disconnect  :: disconnect from Wi-Fi;");
+    printlog("#check       :: print saved creditians;");
+    printlog("#temperature :: print current MCU-temperature;");
+    printlog("#sleep       :: put the microcontroller to sleep;");
+    printlog("#reboot      :: reboot the microcontroller.");
+}
+
+static void initCreditian(const char *key, char *creditian) {
     if (Storage.isKey(key)) {
         Storage.getString(key, creditian, creditianLength);
         printlog("Found creditian under key <%s>: %s", key, creditian);
     } else {
-        const char *basicCreditian = "dummy";
         strncpy(creditian, basicCreditian, creditianLength);
         Storage.putString(key, creditian);
         printlog("Created new creditian under key <%s>: %s", key, creditian);
     }
 }
 
-static void changeWifiCreditian(char *creditian) {
-    if (Ble.argc > Ble.it) {
+static void changeCreditian(char *creditian) {
+    if (Ble.argc > (Ble.it + 1U)) {
         Ble.it++;
         unsigned length = strlen(Ble.argv[Ble.it]);
-        if (length > creditianLength) {
+        if (length > creditianLength - 1U) {
             printlog("Wi-Fi creditian length must be less than %u.",
                      creditianLength);
         } else {
             memset(creditian, '\0', creditianLength);
-            strncpy(creditian, Ble.argv[Ble.it], creditianLength);
-            creditian[length] = '\0';
-            printlog("Wi-Fi creditian <%s> changed to \"%s\".",
-                     Ble.argv[Ble.it - 1], creditian);
+            strncpy(creditian, Ble.argv[Ble.it], length);
+            saveCreditian(Ble.argv[Ble.it - 1U], creditian);
+            printlog("Creditian <%s> changed to \"%s\".", Ble.argv[Ble.it - 1U],
+                     creditian);
         }
     } else {
-        printlog("Fewer arguments than necessary in <%s>.",
-                 Ble.argv[Ble.it - 1]);
+        printlog("Fewer arguments than necessary in <%s>.", Ble.argv[Ble.it]);
     }
 }
 
-static void saveWifiCreditian(const char *key, char *creditian) {
+static void saveCreditian(const char *key, char *creditian) {
     Storage.begin(filename);
 
     if (Storage.isKey(key))
         Storage.remove(key);
     Storage.putString(key, creditian);
-
-    printlog("%s: %s.", key, creditian);
 }
 
 static void connectToWiFi(char *ssid, char *pass) {
@@ -222,9 +237,9 @@ static void disconnectFromWiFi(bool printMessage) {
     }
 }
 
-static void checkWifiCreditian() {
-    printlog("Wi-Fi creditians <ssid, pass, addr>: %s, %s, %s.", ssid, pass,
-             addr);
+static void checkCreditians() {
+    printlog("Creditians <ssid, pass, addr, name>: %s, %s, %s, %s.", ssid, pass,
+             addr, name);
 }
 
 static void temperatureMCU() {
@@ -363,6 +378,7 @@ void setup() {
     } else {
         printlog("BLE started after name %s", BLEName.c_str());
     }
+    Ble.setTimeout(10U);
     Ble.initBleHash();
 
     if (!ledcSetup(RED_LED_CHANNEL, 500, 8) ||
@@ -419,9 +435,10 @@ void setup() {
         errorOccured = true;
     }
 
-    initWifiCreditian(ssidKey, ssid);
-    initWifiCreditian(passKey, pass);
-    initWifiCreditian(addrKey, addr);
+    initCreditian("ssid", ssid);
+    initCreditian("pass", pass);
+    initCreditian("addr", addr);
+    initCreditian("name", name);
 
     connectToWiFi(ssid, pass);
 
@@ -477,50 +494,64 @@ void loop() {
 #if (DEBUG == 1)
             ledcWrite(GREEN_LED_CHANNEL, Led.duty);
 #endif // DEBUG
-            String greetings("Hello, I'm a client!");
-            Client.print(WiFi.macAddress() +
-                         "::" + Coder.codeStringWithAppend(greetings));
         }
-        if (Flag.timer) {
-            float temperature;
+        if (unsigned length = Client.available()) {
+            char *request = new char[length + 1U];
+            Client.readBytes(request, length);
+            request[length] = '\0';
+            char *answer = Coder.codeStringAsString(request);
+            Client.print(answer);
+#if (DEBUG == 1)
+            printlog("%s:%s", request, answer);
+#endif // DEBUG
+            delete[] answer;
+            delete[] request;
+            if (Flag.timer) {
+                float temperature;
 #if (DEMO == 1)
-            temperature = (float)random(35L, 37L) + ((float)random(9L) / 10.0f);
-            snprintf(Lcd.Data.SYS, sizeof(Lcd.Data.SYS) * sizeof(char), "%ld",
-                     random(90L, 150L));
-            snprintf(Lcd.Data.DIA, sizeof(Lcd.Data.DIA) * sizeof(char), "%ld",
-                     random(60L, 100L));
-            snprintf(Lcd.Data.PUL, sizeof(Lcd.Data.PUL) * sizeof(char), "%ld",
-                     random(50L, 90L));
+                temperature =
+                    (float)random(35L, 37L) + ((float)random(9L) / 10.0f);
+                snprintf(Lcd.Data.SYS, sizeof(Lcd.Data.SYS) * sizeof(char),
+                         "%03ld", random(90L, 150L));
+                snprintf(Lcd.Data.DIA, sizeof(Lcd.Data.DIA) * sizeof(char),
+                         "%03ld", random(60L, 100L));
+                snprintf(Lcd.Data.PUL, sizeof(Lcd.Data.PUL) * sizeof(char),
+                         "%03ld", random(50L, 90L));
 #else
-            temperature = Temperature.getTempC();
-            Lcd.parseLcd();
+                if ((temperature = Temperature.getTempC()) > 99.9f) {
+                    temperature = 99.9f;
+                } else if (temperature < 0.0f) {
+                    temperature = 0.0f;
+                }
+                Lcd.parseLcd();
 #endif // DEMO
-
-#define LCD_DATA                                                               \
-    "SYS:%s::DIA:%s::PUL:%s::TMP:%02.1f", Lcd.Data.SYS, Lcd.Data.DIA,          \
-        Lcd.Data.PUL, temperature
-            unsigned length = snprintf(NULL, 0U, LCD_DATA) + 1U;
-            char *lcdData = new char[length];
-            snprintf(lcdData, length, LCD_DATA);
-            Client.print(WiFi.macAddress() +
-                         "::" + Coder.codeStringWithAppend(lcdData));
-            printlog(lcdData);
-            Flag.timer = false;
-            delete[] lcdData;
-            sleepMCU();
-        }
-        if (Client.available()) {
-            String answer = Client.readString();
-            printlog("Data received: ", answer.c_str());
+                const char delimeter = '#';
+                snprintf(lcdData, bufferLength,
+                         "SYS:%3s%cDIA:%3s%cPUL:%3s%cTMP:%03.1f", Lcd.Data.SYS,
+                         delimeter, Lcd.Data.DIA, delimeter, Lcd.Data.PUL,
+                         delimeter, temperature);
+                char *nameToSend = new char[creditianLength + 1U];
+                memset(nameToSend, '\0', creditianLength + 1U);
+                char *crcString = Coder.codeStringAsString(lcdData);
+                if (strcmp(basicCreditian, name))
+                    snprintf(nameToSend, creditianLength + 1U, "&%s", name);
+                Client.print(WiFi.macAddress() + nameToSend + delimeter +
+                             lcdData + delimeter + crcString);
+                printlog(lcdData);
+                Flag.timer = false;
+                delete[] crcString;
+                delete[] nameToSend;
+            }
         }
     } else {
         if (Flag.wifi) {
-            printlog("Wi-Fi main loop ended.");
             disconnectFromWiFi(true);
             Flag.wifi = false;
 #if (DEBUG == 1)
             ledcWrite(GREEN_LED_CHANNEL, 0U);
 #endif // DEBUG
+            printlog("Trying to reconnect...");
+            connectToWiFi(ssid, pass);
         }
     }
 

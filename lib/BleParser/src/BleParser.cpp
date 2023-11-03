@@ -1,20 +1,17 @@
 #include "BleParser.h"
 
-unsigned BleParser::parseString(String &string, const char *delim) {
+unsigned BleParser::parseString(const char *string, const char *delim) {
 #if (DEBUG == 1)
     unsigned long timeStamp = micros();
 #endif // DEBUG
 
     clear();
 
-    unsigned length = string.length();
-    argBasicPtr = new char[length + 1];
+    argBasicPtr = strdup(string);
     if (!argBasicPtr) {
         log_e(">> Allocation error!");
         return 0;
     }
-    memcpy(argBasicPtr, string.c_str(), length);
-    argBasicPtr[length] = '\0';
     char *argPtr = argBasicPtr;
     argPtr = strtok(argPtr, delim);
 

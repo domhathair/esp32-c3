@@ -1,8 +1,8 @@
 #include "BleHash.h"
 
-unsigned int BleHash::hash(const char *string, int h) {
-    return !string[h] ? 5381 : (hash(string, h + 1) * 33) ^ string[h];
-}
+//unsigned BleHash::hash(const char *string, int h) {
+//    return !string[h] ? 5381 : (hash(string, h + 1) * 33) ^ string[h];
+//}
 
 char *BleHash::toLower(const char *string) {
     unsigned length = strlen(string);

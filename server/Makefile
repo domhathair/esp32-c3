@@ -1,10 +1,9 @@
-CC = gcc
-CXXFLAGS = -Wall -Os -lGL -lm -lpthread -ldl -lrt -lX11
+CC = g++
+CXXFLAGS = -Wall -Os -lpthread
 SRC_DIR = src
 INC_DIR = include
-GUI_DIR = raygui/src
-SOURCES = $(SRC_DIR)/main.c
-HEADERS = $(GUI_DIR)/raygui.h
+SOURCES = $(SRC_DIR)/main.cpp $(SRC_DIR)/crc32.c
+HEADERS = $(INC_DIR)/crc32.h
 LIBS =
 NAME = server
 

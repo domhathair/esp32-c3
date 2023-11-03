@@ -7,7 +7,9 @@
 
 class BleHash {
   public:
-    static unsigned hash(const char *, int = 0);
+    constexpr unsigned hash(const char *string, int h = 0) {
+        return !string[h] ? 5381 : (hash(string, h + 1) * 33) ^ string[h];
+    };
     char *toLower(const char *);
 
     virtual void initBleHash();

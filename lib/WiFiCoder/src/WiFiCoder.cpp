@@ -1,30 +1,17 @@
 #include "WiFiCoder.h"
 
 uint32_t WiFiCoder::codeString(const char *string) {
-    String toBeSent(string);
-    return codeString(toBeSent);
-}
-
-uint32_t WiFiCoder::codeString(String &string) {
     const uint32_t crc = 0xFFFFFFFF;
 
-    return crc32(crc, string.c_str(), string.length());
+    return crc32(crc, string, strlen(string));
 }
 
-String WiFiCoder::codeStringWithAppend(const char *string, String delimiter) {
-    String toBeSent(string);
-    return codeStringWithAppend(toBeSent, delimiter);
-}
-
-String WiFiCoder::codeStringWithAppend(String &string, String delimiter) {
-    String local = string;
+char *WiFiCoder::codeStringAsString(const char *string) {
     uint32_t crc = codeString(string);
-    char crcHex[5] = {static_cast<char>((crc >> 24) & 0xFF),
-                      static_cast<char>((crc >> 16) & 0xFF),
-                      static_cast<char>((crc >> 8) & 0xFF),
-                      static_cast<char>(crc & 0xFF), '\0'};
-
-    return local + delimiter + crcHex;
+    unsigned length = sizeof(uint32_t) * 2U + 1U;
+    char *value = new char[length];
+    snprintf(value, length, "%0*X", sizeof(uint32_t) * 2U, crc);
+    return value;
 }
 
 uint32_t WiFiCoder::crc32(uint32_t crc, const char *buffer, size_t size) {
