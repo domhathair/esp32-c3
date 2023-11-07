@@ -1,5 +1,5 @@
 CC = g++
-CXXFLAGS = -Wall -Os -lpthread
+CXXFLAGS = -Wall -Wno-parentheses -Wno-write-strings -Os -lpthread
 SRC_DIR = src
 INC_DIR = include
 SOURCES = $(SRC_DIR)/main.cpp $(SRC_DIR)/crc32.c

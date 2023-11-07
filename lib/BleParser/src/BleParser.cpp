@@ -23,7 +23,7 @@ unsigned BleParser::parseString(const char *string, const char *delim) {
     argv = argVector.data();
 
 #if (DEBUG == 1)
-    log_e(">> Data parsed into %u parts in %u us:", argc, micros() - timeStamp);
+    log_e(">> Data parsed into %u parts in: %u us", argc, micros() - timeStamp);
     for (unsigned counter = 0; counter < argc; counter++)
         log_e(">> %u: %s", counter, argv[counter]);
     log_e(">> Free heap: %u", ESP.getFreeHeap());

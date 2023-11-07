@@ -21,7 +21,7 @@ static void saveCreditian(const char *, char *);
 static void connectToWiFi(char *, char *);
 static void disconnectFromWiFi(bool);
 static void checkCreditians();
-static void temperatureMCU();
+static void temperatureOfMCU();
 static inline void resetAdcPins();
 static void shutDownPeripheral(bool);
 static void RTC_IRAM_ATTR wakeStub();
@@ -31,24 +31,24 @@ static void ARDUINO_ISR_ATTR risingPumpPinInterrupt();
 static void ARDUINO_ISR_ATTR risingClkPinInterrupt();
 static void ARDUINO_ISR_ATTR timer0Interrupt();
 
-const unsigned creditianLength = 48U;
-const unsigned bufferLength = 128U;
+const unsigned creditianSize = 48U;
+const unsigned bufferSize = 128U;
 const unsigned port = 80U;
 const unsigned timerDivider = 80U;
 const unsigned timerFirstStep = 1000U;
 const unsigned timerStep = 47000U / 12U;
 const char *filename = "settings";
 const char *basicCreditian = "dummy";
-const unsigned valueToSleep = 6000U;
-static unsigned loopsToSleep = 0U;
+const unsigned sleepValue = 6000U;
+static unsigned sleepLoops = 0U;
 static hw_timer_t *timer0 = NULL;
 static unsigned long oldTimeStamp = 0U;
-static char ssid[creditianLength] = {0};
-static char pass[creditianLength] = {0};
-static char addr[creditianLength] = {0};
-static char name[creditianLength] = {0};
-static char lcdData[bufferLength] = {0};
-static char outputLog[bufferLength] = {0};
+static char ssid[creditianSize] = {0};
+static char pass[creditianSize] = {0};
+static char addr[creditianSize] = {0};
+static char name[creditianSize] = {0};
+static char package[bufferSize] = {0};
+static char output[bufferSize] = {0};
 static String BLEName("BLE-MAC::" + WiFi.macAddress());
 static struct flag_s {
     bool ble : 1;
@@ -78,11 +78,11 @@ static DS18B20 Temperature(ONEWIRE_PIN);
 
 #define printlog(...)                                                          \
     {                                                                          \
-        snprintf(outputLog, bufferLength, __VA_ARGS__);                        \
+        snprintf(output, bufferSize, __VA_ARGS__);                             \
         if (Ble.connected()) {                                                 \
-            Ble.printf("%s\r\n", outputLog);                                   \
+            Ble.printf("%s\r\n", output);                                      \
         }                                                                      \
-        log_e(">> %s", outputLog);                                             \
+        log_e(">> %s", output);                                                \
     }
 
 void Ble::onWrite(BLECharacteristic *pCharacteristic) {
@@ -136,7 +136,7 @@ void Ble::initBleHash() {
     commandList[hash("connect")] = []() { connectToWiFi(ssid, pass); };
     commandList[hash("disconnect")] = []() { disconnectFromWiFi(true); };
     commandList[hash("check")] = []() { checkCreditians(); };
-    commandList[hash("temperature")] = []() { temperatureMCU(); };
+    commandList[hash("temperature")] = []() { temperatureOfMCU(); };
     commandList[hash("sleep")] = []() { sleepMCU(); };
     commandList[hash("reboot")] = []() { rebootMCU(); };
 }
@@ -158,10 +158,10 @@ static void helpMessage() {
 
 static void initCreditian(const char *key, char *creditian) {
     if (Storage.isKey(key)) {
-        Storage.getString(key, creditian, creditianLength);
+        Storage.getString(key, creditian, creditianSize);
         printlog("Found creditian under key <%s>: %s", key, creditian);
     } else {
-        strncpy(creditian, basicCreditian, creditianLength);
+        strncpy(creditian, basicCreditian, creditianSize);
         Storage.putString(key, creditian);
         printlog("Created new creditian under key <%s>: %s", key, creditian);
     }
@@ -171,11 +171,11 @@ static void changeCreditian(char *creditian) {
     if (Ble.argc > (Ble.it + 1U)) {
         Ble.it++;
         unsigned length = strlen(Ble.argv[Ble.it]);
-        if (length > creditianLength - 1U) {
+        if (length > creditianSize - 1U) {
             printlog("Wi-Fi creditian length must be less than %u.",
-                     creditianLength);
+                     creditianSize);
         } else {
-            memset(creditian, '\0', creditianLength);
+            memset(creditian, '\0', creditianSize);
             strncpy(creditian, Ble.argv[Ble.it], length);
             saveCreditian(Ble.argv[Ble.it - 1U], creditian);
             printlog("Creditian <%s> changed to \"%s\".", Ble.argv[Ble.it - 1U],
@@ -242,7 +242,7 @@ static void checkCreditians() {
              addr, name);
 }
 
-static void temperatureMCU() {
+static void temperatureOfMCU() {
     printlog("MCU temperature: %.1f C.", temperatureRead());
 }
 
@@ -455,7 +455,7 @@ void loop() {
     static uint8_t duty = Led.duty;
 
     if ((Flag.timer || Flag.look) && !Flag.ble) {
-        if (loopsToSleep++ == valueToSleep) {
+        if (sleepLoops++ == sleepValue) {
             sleepMCU();
         }
         if (!digitalRead(PUMP_PIN)) {
@@ -507,40 +507,34 @@ void loop() {
             delete[] answer;
             delete[] request;
             if (Flag.timer) {
-                float temperature;
-#if (DEMO == 1)
-                temperature =
-                    (float)random(35L, 37L) + ((float)random(9L) / 10.0f);
-                snprintf(Lcd.Data.SYS, sizeof(Lcd.Data.SYS) * sizeof(char),
-                         "%03ld", random(90L, 150L));
-                snprintf(Lcd.Data.DIA, sizeof(Lcd.Data.DIA) * sizeof(char),
-                         "%03ld", random(60L, 100L));
-                snprintf(Lcd.Data.PUL, sizeof(Lcd.Data.PUL) * sizeof(char),
-                         "%03ld", random(50L, 90L));
-#else
-                if ((temperature = Temperature.getTempC()) > 99.9f) {
+                float temperature = Temperature.getTempC();
+                if (temperature > 99.9f) {
                     temperature = 99.9f;
                 } else if (temperature < 0.0f) {
                     temperature = 0.0f;
                 }
                 Lcd.parseLcd();
-#endif // DEMO
                 const char delimeter = '#';
-                snprintf(lcdData, bufferLength,
-                         "SYS:%3s%cDIA:%3s%cPUL:%3s%cTMP:%03.1f", Lcd.Data.SYS,
-                         delimeter, Lcd.Data.DIA, delimeter, Lcd.Data.PUL,
-                         delimeter, temperature);
-                char *nameToSend = new char[creditianLength + 1U];
-                memset(nameToSend, '\0', creditianLength + 1U);
-                char *crcString = Coder.codeStringAsString(lcdData);
-                if (strcmp(basicCreditian, name))
-                    snprintf(nameToSend, creditianLength + 1U, "&%s", name);
-                Client.print(WiFi.macAddress() + nameToSend + delimeter +
-                             lcdData + delimeter + crcString);
-                printlog(lcdData);
+                char *mac = strdup(WiFi.macAddress().c_str());
+                char *crc;
+                unsigned length;
+                char *creditian = NULL;
+                snprintf(package, bufferSize, "%s%s%c%3s%c%3s%c%3s%c%03.1f",
+                         mac,
+                         strcmp(basicCreditian, name)
+                             ? creditian = asnprintf(NULL, &length, "&%s", name)
+                             : "",
+                         delimeter, Lcd.Data.SYS, delimeter, Lcd.Data.DIA,
+                         delimeter, Lcd.Data.PUL, delimeter, temperature);
+                snprintf(package, bufferSize, "%s%c%s", package, delimeter,
+                         crc = Coder.codeStringAsString(package));
+                Client.print(package);
+                printlog(package);
                 Flag.timer = false;
-                delete[] crcString;
-                delete[] nameToSend;
+                if (creditian)
+                    delete[] creditian;
+                delete[] crc;
+                delete[] mac;
             }
         }
     } else {

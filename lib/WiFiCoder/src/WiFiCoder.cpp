@@ -8,9 +8,8 @@ uint32_t WiFiCoder::codeString(const char *string) {
 
 char *WiFiCoder::codeStringAsString(const char *string) {
     uint32_t crc = codeString(string);
-    unsigned length = sizeof(uint32_t) * 2U + 1U;
-    char *value = new char[length];
-    snprintf(value, length, "%0*X", sizeof(uint32_t) * 2U, crc);
+    unsigned length;
+    char *value = asnprintf(NULL, &length, "%0*X", sizeof(uint32_t) * 2U, crc);
     return value;
 }
 
