@@ -492,7 +492,7 @@ void loop() {
             printlog("Main loop Wi-Fi flag activated!");
             Flag.wifi = true;
 #if (DEBUG == 1)
-            ledcWrite(GREEN_LED_CHANNEL, Led.duty);
+            ledcWrite(GREEN_LED_CHANNEL, UINT8_MAX);
 #endif // DEBUG
         }
         if (unsigned length = Client.available()) {
